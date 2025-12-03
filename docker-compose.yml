@@ -1,0 +1,175 @@
+version: '3.8'
+
+services:
+  # --- 1. Reverse Proxy (Nginx) ---
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # Порт 443 убрали
+    volumes:
+      - ./startup_scripts/nginx.conf:/etc/nginx/templates/default.conf.template
+      # Тома certbot убрали
+    depends_on:
+      - web
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+  # Сервис certbot удален полностью
+
+  # --- 2. Database (Postgres) ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # --- 3. Redis ---
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # --- 4. MinIO ---
+  minio:
+    image: minio/minio:RELEASE.2023-01-25T00-19-54Z
+    container_name: minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      # Важно: 9000 прокидываем наружу, так как S3_ENDPOINT в .env будет указывать на внешний IP
+      - "9000:9000"
+      # Консоль админа MinIO (по желанию, можно убрать если не нужна снаружи)
+      - "9001:9001"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # --- 5. MinIO Setup ---
+  createbuckets:
+    image: minio/mc:RELEASE.2023-08-29T22-55-06Z
+    depends_on:
+      - minio
+    env_file: .env
+    volumes:
+      - ./startup_scripts:/startup_scripts
+    entrypoint: /bin/sh /startup_scripts/minio_startup.sh
+
+  # Отдельный контейнер для Бота
+  bot:
+    build: .
+    container_name: tg_bot
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    # Запускаем наш новый скрипт
+    command: python run_bot.py
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # --- 6. Main Web Application ---
+  web:
+    build: .
+    container_name: web_app
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - temp_uploads:/app/storage/uploads
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    # Добавляем extra_hosts, чтобы контейнер мог обратиться к хосту по внешнему IP (для MinIO)
+    # Это "хак" для связи с S3_ENDPOINT=IP:9000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:8000 main:app
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 800M
+
+# --- 7. Celery Worker (Только выполнение задач) ---
+  celery_worker:
+    build: .
+    container_name: celery_worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Воркеру нужен доступ к файлам для обработки видео
+      - temp_uploads:/app/storage/uploads
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # УБРАЛИ флаг --beat. Оставили только worker.
+    command: celery -A tasks.celery_app worker --loglevel=info --pool=gevent --concurrency=10
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 800M
+
+  # --- 8. Celery Beat (Только планировщик) ---
+  celery_beat:
+    build: .
+    container_name: celery_beat
+    restart: unless-stopped
+    env_file: .env
+    # Биту не нужны объемы с файлами, ему нужен только код и БД/Redis
+    depends_on:
+      - postgres
+      - redis
+    # Команда запуска планировщика
+    command: celery -A tasks.celery_app beat --loglevel=info
+    deploy:
+      resources:
+        limits:
+          # Планировщик ест очень мало ресурсов
+          cpus: '0.2'
+          memory: 256M
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  temp_uploads:

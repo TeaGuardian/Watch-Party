@@ -1,0 +1,165 @@
+<!-- #/templates/index.html -->
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="dashboard-container">
+    
+    <!-- Навигация (Табы) -->
+    <nav class="nav-tabs">
+        <button class="tab-btn active" onclick="openTab('news')">Новости</button>
+        <button class="tab-btn" onclick="openTab('rooms')">Комнаты</button>
+        <button class="tab-btn" onclick="openTab('profile')">Профиль</button>
+        <button id="admin-panel-btn" class="tab-btn" style="display:none; color: purple;" onclick="location.href='/admin'">⚡ Админка</button>
+        <button class="tab-btn logout-btn" onclick="logout()">Выход</button>
+    </nav>
+
+    <!-- Секция: Новости -->
+    <div id="tab-news" class="tab-content active">
+        <div id="news-container" class="news-grid">
+            <!-- Сюда JS загрузит посты -->
+            <div class="loading-spinner">Загрузка...</div>
+        </div>
+        
+        <!-- Кнопка для админа (скрыта по умолчанию) -->
+        <div id="admin-news-controls" style="display: none; margin-top: 20px;">
+            <h3>Добавить новость</h3>
+            <div class="input-container">
+                <textarea id="new-post-content" class="input-field" rows="4" placeholder=" "></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="createNewsPost()">Опубликовать</button>
+        </div>
+    </div>
+
+    <!-- Секция: Комнаты -->
+    <div id="tab-rooms" class="tab-content">
+        <div class="rooms-actions">
+            <button class="btn btn-primary" style="width: auto;" onclick="showCreateRoomModal()">+ Создать комнату</button>
+        </div>
+        <div id="rooms-container" class="rooms-grid">
+            <div class="loading-spinner">Загрузка...</div>
+        </div>
+    </div>
+
+    <!-- Секция: Профиль -->
+    <div id="tab-profile" class="tab-content">
+        <div class="profile-card">
+            <div class="profile-header">
+                <div class="profile-avatar-wrapper">
+                    <img id="profile-avatar" src="" alt="Avatar" class="profile-avatar">
+                    <label for="avatar-input" class="avatar-overlay">
+                        <span>📷</span>
+                    </label>
+                    <input type="file" id="avatar-input"
+                           style="display: none;"
+                           onchange="handleAvatarSelect(this)">
+                </div>
+
+                <div>
+                    <h2 id="profile-username">User</h2>
+                    <span id="profile-status" class="status-badge">Loading...</span>
+                    <!-- Кнопка удаления (появится через JS если есть аватар) -->
+                    <button id="btn-delete-avatar" class="btn-text-danger" style="display:none; font-size:12px; margin-top:5px; border:none; background:none; cursor:pointer;" onclick="deleteAvatar()">Удалить фото</button>
+                </div>
+            </div>
+
+            <div class="profile-details">
+                <div class="detail-row">
+                    <span>Telegram:</span>
+                    <span id="tg-status">Не привязан</span>
+                </div>
+                <!-- Кнопка привязки ТГ -->
+                <div id="tg-connect-block" style="margin-top: 10px;">
+                    <button class="btn btn-secondary" onclick="generateTgLink()">Привязать Telegram</button>
+                    <div id="tg-link-result" class="tg-link-box" style="display:none;">
+                        <a id="tg-link-href" href="#" target="_blank">Перейти к боту</a>
+                        <p class="small-text">Код: <span id="tg-code-text"></span></p>
+                    </div>
+                </div>
+                
+                <div class="detail-row" style="margin-top: 20px;">
+                    <span>Кем одобрен:</span>
+                    <span id="approved-by">-</span>
+                </div>
+            </div>
+
+            <div style="margin: 20px 0; text-align: center;">
+                <a href="/policy" style="color: var(--text-muted); font-size: 14px; text-decoration: none; border-bottom: 1px dashed var(--text-muted);">
+                    📄 Политика, лимиты и условия (Beta)
+                </a>
+            </div>
+
+            <div class="profile-actions">
+                <button class="btn btn-danger" onclick="deleteAccount()">Удалить аккаунт</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Заглушка для непроверенных пользователей -->
+    <div id="access-denied-placeholder" class="access-denied" style="display: none;">
+        <h3>🔒 Доступ ограничен</h3>
+        <p>Чтобы видеть новости и комнаты, необходимо:</p>
+        <ol>
+            <li>Привязать Telegram в профиле.</li>
+            <li>Дождаться подтверждения администратором.</li>
+        </ol>
+        <button class="btn btn-primary" onclick="openTab('profile')">Перейти в профиль</button>
+    </div>
+
+</div>
+
+<!-- Модальное окно создания комнаты -->
+<div id="create-room-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+        <h3>Новая комната</h3>
+        <div class="input-container">
+            <input type="text" id="room-name" class="input-field" placeholder=" ">
+            <label class="input-label">Название</label>
+        </div>
+        
+        <div class="input-container">
+            <label style="position:relative; font-size: 14px; color: #666;">Цвет шапки</label>
+            <div class="color-picker-wrapper">
+                <input type="color" id="room-color" value="#0d6efd">
+            </div>
+        </div>
+
+        <div class="checkbox-container">
+            <input type="checkbox" id="room-private">
+            <label for="room-private">Закрытая комната</label>
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeCreateRoomModal()">Отмена</button>
+            <button class="btn btn-primary" onclick="createRoom()">Создать</button>
+        </div>
+    </div>
+</div>
+
+<div id="cropper-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+        <h3>Редактирование фото</h3>
+        <div class="cropper-container">
+            <img id="cropper-image" src="" style="max-width: 100%;">
+        </div>
+        <div class="modal-actions" style="justify-content: center; margin-top: 15px;">
+            <button class="btn btn-secondary" onclick="closeCropperModal()">Отмена</button>
+            <button class="btn btn-primary" onclick="saveCroppedAvatar()">Сохранить</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- 1. Стили EasyMDE (Редактор) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+
+<!-- 2. Скрипты библиотек -->
+<script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+
+<!-- 3. Наши стили и скрипты -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+<!-- Обратите внимание: загружаем dashboard.js ПОСЛЕ библиотек -->
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,110 @@
+<!-- #/templates/policy.html -->
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="policy-container" style="max-width: 800px; margin: 0 auto; padding: 20px; background: var(--bg-card); border-radius: 12px; box-shadow: 0 4px 12px var(--shadow-color);">
+
+    <div style="text-align: center; margin-bottom: 30px; border-bottom: 2px solid var(--border-color); padding-bottom: 20px;">
+        <h1 style="margin: 0;">Политика и Условия</h1>
+        <p style="color: var(--text-muted);">Watch Party Service</p>
+        <div style="background: var(--bg-hover); display: inline-block; padding: 5px 15px; border-radius: 20px; margin-top: 10px; font-weight: bold; font-size: 14px; border: 1px solid var(--primary-color);">
+            🚀 Версия: 1.0.0-beta (от 02.12.2025)
+        </div>
+    </div>
+
+    <section style="margin-bottom: 30px;">
+        <h2>1. О Сервисе (Beta)</h2>
+        <p>
+            Сервис "Watch Party" находится в стадии <b>открытого бета-тестирования</b>.
+            Программное обеспечение предоставляется "как есть" (AS IS), без каких-либо гарантий работоспособности,
+            сохранности данных или доступности в режиме 24/7.
+        </p>
+        <p>Администрация оставляет за собой право в любой момент:</p>
+        <ul>
+            <li>Удалить аккаунт или комнату без объяснения причин.</li>
+            <li>Изменить квоты и лимиты.</li>
+            <li>Сбросить базу данных в случае критических обновлений.</li>
+        </ul>
+    </section>
+
+    <section style="margin-bottom: 30px;">
+        <h2>2. Обработка и хранение данных</h2>
+        <p>Мы собираем минимально необходимый набор данных для функционирования сервиса:</p>
+        <ul>
+            <li><b>Учетные данные:</b> Логин и хэш пароля (хранится с использованием алгоритма pbkdf2).</li>
+            <li><b>Связь с Telegram:</b> Ваш Telegram ID и username (если привязано) для восстановления доступа.</li>
+            <li><b>Медиа-контент:</b> Видеофайлы и изображения (аватары), загруженные вами.</li>
+            <li><b>Сетевые данные:</b> IP-адреса (в логах сервера для защиты от DoS-атак).</li>
+        </ul>
+        <div style="background: rgba(220, 53, 69, 0.1); border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0;">
+            <h3 style="margin-top: 0; color: #dc3545;">⚠️ Важное предупреждение о безопасности</h3>
+            <p>
+                <b>Данные на сервере НЕ ШИФРУЮТСЯ.</b> <br>
+                Загруженные вами файлы хранятся в открытом виде на диске или в S3-хранилище.
+                База данных также не использует сквозное шифрование.
+            </p>
+            <p style="font-weight: bold;">
+                ЗАПРЕЩЕНО использовать сервис для передачи или хранения:
+            </p>
+            <ul style="margin-bottom: 0;">
+                <li>Конфиденциальных документов (паспорта, договора).</li>
+                <li>Приватных фото/видео материалов чувствительного характера.</li>
+                <li>Паролей, ключей доступа и финансовой информации.</li>
+            </ul>
+        </div>
+    </section>
+
+    <section style="margin-bottom: 30px;">
+        <h2>3. Лимиты и Ограничения</h2>
+        <p>Для обеспечения стабильности работы всех пользователей действуют следующие квоты:</p>
+
+        <table class="data-table" style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+            <thead>
+                <tr style="background: var(--bg-hover);">
+                    <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Параметр</th>
+                    <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Значение</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);">Максимум комнат на аккаунт</td>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOMS_COUNT }}</b> шт.</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. видео в одной комнате</td>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_VIDEOS }}</b> шт.</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. размер одного файла</td>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_VIDEO_SIZE_MB }}</b> МБ</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);">Лимит хранилища на комнату</td>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_STORAGE_MB }}</b> МБ</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);">Одновременно открытых комнат</td>
+                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_OPENED_ROOMS }}</b></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div style="margin-top: 15px; font-size: 14px; color: var(--text-muted);">
+            <p><b>♻️ Автоочистка:</b> В целях экономии места, видеофайлы, которые не воспроизводились <b>более 2х часов</b>, удаляются автоматически.</p>
+        </div>
+    </section>
+
+    <section style="margin-bottom: 30px;">
+        <h2>4. Cookie файлы</h2>
+        <p>
+            Сервис использует технические файлы cookie (session_id) исключительно для поддержания авторизации пользователя.
+            Мы не используем трекеры, рекламные пиксели или аналитику третьих сторон.
+        </p>
+    </section>
+
+    <div style="text-align: center; margin-top: 40px;">
+        <button class="btn btn-primary" onclick="window.history.back()" style="width: auto; padding: 10px 30px;">Вернуться назад</button>
+    </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,311 @@
+/* #/static/css/style.css */
+/* --- 1. CSS VARIABLES (THEME ENGINE) --- */
+:root {
+    /* Dark Theme (Now Default) */
+    --bg-body: #121212;
+    --bg-card: #1e1e1e;
+    --bg-input: #2d2d2d;
+    --bg-hover: #333333;
+    --text-main: #e0e0e0;
+    --text-muted: #a0a0a0;
+    --text-placeholder: #666666;
+    --border-color: #333333;
+    --shadow-color: rgba(0,0,0,0.5);
+
+    /* Слегка приглушим яркие цвета для темной темы */
+    --primary-color: #3a8fdc;
+    --danger-color: #dc3545;
+    --success-color: #2ecc71;
+}
+
+[data-theme="light"] {
+    /* Light Theme (Optional) */
+    --bg-body: #f4f6f8;
+    --bg-card: #ffffff;
+    --bg-input: #ffffff;
+    --bg-hover: #f1f1f1;
+    --text-main: #212529;
+    --text-muted: #666666;
+    --text-placeholder: #999999;
+    --border-color: #eeeeee;
+    --shadow-color: rgba(0,0,0,0.1);
+
+    --primary-color: #007bff;
+}
+
+/* --- Global Reset & Base --- */
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-body);
+    color: var(--text-main);
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+.main-wrapper {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* --- Theme Toggle Button (Fixed) --- */
+.theme-toggle-btn {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 10px var(--shadow-color);
+    transition: all 0.3s;
+}
+.theme-toggle-btn:hover { transform: scale(1.1); }
+.theme-toggle-btn svg { width: 24px; height: 24px; fill: var(--text-main); }
+
+/* --- Notifications (Toast) --- */
+#notification-area {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 90%;
+    max-width: 400px;
+}
+
+.toast {
+    background: #333;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    opacity: 0;
+    animation: fadeIn 0.3s forwards;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.toast.error { background: #e74c3c; }
+.toast.success { background: #2ecc71; }
+
+@keyframes fadeIn {
+    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(-10px); }
+}
+
+/* --- INPUT STYLES --- */
+
+.input-container {
+    position: relative;
+    width: 100%; /* Адаптивность */
+    max-width: 90%;
+    margin: 20px auto;
+}
+
+.input-field {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    outline: none;
+    font-size: 16px;
+    transition: border-color 0.1s ease, box-shadow 0.1s ease;
+    box-shadow: 0 4px 6px var(--shadow-color);
+    box-sizing: border-box; /* Важно для отступов */
+    background: var(--bg-input);
+    color: var(--text-main);
+}
+
+.input-field:focus {
+    border-color: #007bff;
+}
+
+.input-label {
+    position: absolute;
+    top: 50%;
+    left: 15px;
+    transform: translateY(-50%);
+    color: var(--text-placeholder);
+    font-size: 16px;
+    pointer-events: none;
+    transition: all 0.2s ease;
+    background-color: var(--bg-input);
+    padding: 0 6px;
+    border-radius: 4px;
+}
+
+/* Магия плавающего лейбла */
+.input-field:focus + .input-label,
+.input-field:not(:placeholder-shown) + .input-label {
+    top: 0;
+    font-size: 12px;
+    color: #007bff;
+}
+
+.input-field:not(:focus) ~ .input-label {
+    color: #999; /* Цвет лейбла когда не фокус */
+}
+
+/* Кнопка глаза */
+.toggle-password {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    outline: none;
+}
+
+.toggle-password svg {
+    width: 24px;
+    height: 24px;
+    fill: #999;
+    transition: fill 0.2s ease;
+}
+
+.toggle-password:hover svg {
+    fill: #007bff;
+}
+
+/* Индикатор силы пароля */
+.password-strength {
+    position: absolute;
+    left: 2px;
+    bottom: 2px;
+    width: calc(100% - 4px);
+    height: 3px;
+    background-color: transparent;
+    border-radius: 0 0 6px 6px;
+    opacity: 0;
+    overflow: hidden;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+}
+
+.input-field:focus ~ .password-strength {
+    opacity: 1;
+}
+
+.password-strength-bar {
+    height: 100%;
+    width: 0;
+    background-color: red;
+    transition: width 0.3s ease, background-color 0.4s ease;
+}
+
+.password-strength-bar.weak { background-color: #ff4d4d; }
+.password-strength-bar.moderate { background-color: #ffcc00; }
+.password-strength-bar.strong { background-color: #00cc66; }
+
+/* Убираем стандартный глаз в IE/Edge */
+::-ms-reveal { display: none; }
+
+/* Кнопки (по мотивам wn-button) */
+.btn {
+    width: 100%;
+    max-width: 320px;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    margin: 10px auto;
+    display: block;
+    font-size: 16px;
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.btn-primary {
+    background-color: #007bff;
+    color: white;
+}
+
+.btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.btn:hover { opacity: 0.9; }
+
+/* --- Auth Page Styles --- */
+.auth-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 80vh; /* Вертикальное центрирование */
+}
+
+.auth-card {
+    background: var(--bg-card);
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px var(--shadow-color);
+    width: 100%;
+    max-width: 360px;
+    text-align: center;
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.auth-title {
+    margin-bottom: 25px;
+    color: var(--text-main);
+}
+
+.auth-switch {
+    margin-top: 20px;
+    color: #666;
+    font-size: 14px;
+}
+
+.auth-switch span {
+    color: #007bff;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.auth-switch span:hover {
+    text-decoration: underline;
+}
+
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 15px 0;
+    font-size: 14px;
+    color: var(--text-muted);
+    text-align: left;
+}
+
+.checkbox-container input {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}

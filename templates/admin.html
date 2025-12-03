@@ -1,0 +1,77 @@
+<!-- #/templates/admin.html -->
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="admin-wrapper">
+    <!-- Sidebar -->
+    <aside class="admin-sidebar">
+        <div class="sidebar-header">
+            <h3>Admin Panel</h3>
+        </div>
+        <nav class="admin-nav">
+            <button class="nav-item active" onclick="switchSection('dashboard')">📊 Дашборд</button>
+            <button class="nav-item" onclick="switchSection('users')">👥 Пользователи</button>
+            <button class="nav-item" onclick="location.href='/'">🏠 На сайт</button>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="admin-content">
+        
+        <!-- SECTION: DASHBOARD -->
+        <div id="section-dashboard" class="admin-section active">
+            <h2>Обзор системы</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Пользователей</h3>
+                    <p id="stat-users">-</p>
+                </div>
+                <div class="stat-card warning">
+                    <h3>Ждут подтверждения</h3>
+                    <p id="stat-new">-</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Комнат</h3>
+                    <p id="stat-rooms">-</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Видео</h3>
+                    <p id="stat-videos">-</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION: USERS -->
+        <div id="section-users" class="admin-section">
+            <div class="section-header">
+                <h2>Управление пользователями</h2>
+                <button class="btn btn-sm btn-secondary" onclick="loadUsers()">Обновить</button>
+            </div>
+            
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Логин</th>
+                            <th>TG</th>
+                            <th>Роль</th>
+                            <th>Статус</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-table-body">
+                        <!-- JS Render -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </main>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+{% endblock %}

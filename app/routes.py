@@ -1,0 +1,776 @@
+#/app/routes.py
+import hashlib
+import re
+import secrets
+import string
+import time
+import random
+
+from captcha.image import ImageCaptcha
+from flask import Blueprint, request, jsonify, session, redirect, send_file, send_from_directory
+from core.models import User, db, RoomBan
+import sys
+import os
+from werkzeug.utils import secure_filename
+from peewee import fn
+from core.storage import storage
+from . import socketio
+from .decorators import login_required, admin_required
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.models import Room, Video, NewsPost, User, RoomAccess, db
+from core.validators import validate_password_strength
+from config import BotConfig, AppConfig
+from tasks.media import process_video_task, delete_storage_folder_task
+
+api = Blueprint('api', __name__, url_prefix='/api')
+
+ALLOWED_EXTENSIONS = {'mp4', 'mkv', 'avi', 'mov'}
+
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def calculate_file_hash(file_stream):
+    sha256_hash = hashlib.sha256()
+    pos = file_stream.tell()
+    for byte_block in iter(lambda: file_stream.read(4096), b""):
+        sha256_hash.update(byte_block)
+    file_stream.seek(pos)
+    return sha256_hash.hexdigest()
+
+
+# --- AUTH ---
+
+@api.route('/captcha', methods=['GET'])
+def get_captcha():
+    # 1. Генерируем случайный текст (4 символа, цифры и буквы)
+    code = ''.join(random.choices('WTRFYKVNMXZAQH' + string.digits, k=4))
+
+    # 2. Сохраняем в сессию (чтобы потом проверить)
+    session['captcha_code'] = code
+
+    # 3. Рисуем картинку
+    image = ImageCaptcha(width=280, height=90)
+    data = image.generate(code)
+
+    # 4. Отдаем как файл
+    return send_file(data, mimetype='image/png')
+
+
+@api.route('/register', methods=['POST'])
+def register():
+    data = request.json or {}
+    username = data.get('username')
+    password = data.get('password')
+    cookie_consent = data.get('cookie_consent', False)
+
+    captcha_input = data.get('captcha', '').upper()
+    real_captcha = session.get('captcha_code', '')
+
+    if not captcha_input or captcha_input != real_captcha:
+        return jsonify({'error': 'Неверная капча'}), 400
+
+    if not username or not password:
+        return jsonify({'error': 'Login and password are required'}), 400
+
+    if not cookie_consent:
+        return jsonify({'error': 'You must accept cookies to register'}), 400
+
+    # --- ПРОВЕРКА ПАРОЛЯ ---
+    is_strong, msg = validate_password_strength(password)
+    if not is_strong:
+        return jsonify({'error': msg}), 400
+    # -----------------------
+
+    if User.get_or_none(User.username == username):
+        return jsonify({'error': 'Username already taken'}), 400
+
+    try:
+        user = User(username=username, cookie_consent=True)
+        user.set_password(password)
+        user.save()
+        session['user_id'] = user.id
+        return jsonify({'success': True, 'message': 'Registered successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@api.route('/login', methods=['POST'])
+def login():
+    data = request.json or {}
+    username = data.get('username')
+    password = data.get('password')
+
+    user = User.get_or_none(User.username == username)
+
+    captcha_input = data.get('captcha', '').upper()
+    real_captcha = session.get('captcha_code', '')
+
+    if not captcha_input or captcha_input != real_captcha:
+        return jsonify({'error': 'Неверная капча'}), 400
+
+    if not user or not user.check_password(password):
+        return jsonify({'error': 'Invalid credentials'}), 401
+
+    if user.status == 'banned':
+        return jsonify({'error': 'Account is banned'}), 403
+
+    session['user_id'] = user.id
+    session.permanent = True
+
+    return jsonify({
+        'success': True,
+        'user': {
+            'username': user.username,
+            'role': user.role,
+            'status': user.status
+        }
+    })
+
+
+@api.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'success': True})
+
+
+# --- PROFILE & TG ---
+
+@api.route('/me', methods=['GET'])
+@login_required
+def get_me(current_user: User):
+    """Получение состояния текущего пользователя"""
+    return jsonify({
+        'id': current_user.id,
+        'username': current_user.username,
+        'role': current_user.role,
+        'status': current_user.status,
+        'tg_connected': bool(current_user.tg_id),
+        'tg_username': current_user.tg_username,
+        'avatar_url': storage.get_url(current_user.avatar_path),
+        'approved_by': current_user.approved_by.username if current_user.approved_by else None
+    })
+
+
+@api.route('/tg_link', methods=['GET'])
+@login_required
+def get_tg_link(current_user: User):
+    """Генерация ссылки на бота"""
+    if current_user.tg_id:
+        return jsonify({'error': 'Telegram already connected'}), 400
+
+    # Генерируем новый код, если старого нет
+    if not current_user.verification_code:
+        # Генерируем 16-значный случайный код
+        code = secrets.token_hex(8)
+        current_user.verification_code = code
+        current_user.save()
+    else:
+        code = current_user.verification_code
+
+    # Формируем ссылку (Deep Linking)
+    link = f"{BotConfig.LINK}?start={code}"
+
+    return jsonify({
+        'success': True,
+        'link': link,
+        'code': code  # На случай, если нужно отобразить код вручную
+    })
+
+
+@api.route('/tg_link', methods=['DELETE'])
+@login_required
+def unlink_telegram(current_user):
+    """Отвязка Telegram со стороны сайта"""
+    if not current_user.tg_id:
+        return jsonify({'error': 'Telegram not connected'}), 400
+
+    # Очищаем данные
+    current_user.tg_id = None
+    current_user.tg_username = None
+
+    # Сбрасываем статус, так как теряем доверие (если не админ)
+    if current_user.role != 'admin':
+        current_user.status = 'new'
+        current_user.approved_by = None
+
+    current_user.save()
+
+    return jsonify({
+        'success': True,
+        'message': 'Telegram unlinked. Your status is reset to New.'
+    })
+
+
+@api.route('/account', methods=['DELETE'])
+@login_required
+def delete_account(current_user):
+    """Удаление аккаунта"""
+    if current_user.status == 'banned':
+        return jsonify({'error': 'Cannot delete banned account'}), 403
+
+    user_id = current_user.id
+    user_folder = f"users/{user_id}/"
+    delete_storage_folder_task.delay(user_folder)
+    current_user.delete_instance(recursive=True)
+
+    session.clear()
+    return jsonify({'success': True, 'message': 'Account and files scheduled for deletion'})
+
+
+@api.route('/profile/avatar', methods=['POST'])
+@login_required
+def upload_avatar(current_user):
+    if 'avatar' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+
+    file = request.files['avatar']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+
+    # Генерируем путь: users/{id}/avatar_{timestamp}.jpg
+    # Timestamp нужен, чтобы избегать кеширования старых аватарок
+    filename = f"avatar_{int(time.time())}.jpg"
+    storage_path = f"users/{current_user.id}/{filename}"
+
+    # Если была старая аватарка — удаляем её, чтобы не засорять S3/диск
+    if current_user.avatar_path:
+        storage.delete_file(current_user.avatar_path)
+
+    # Читаем байты и сохраняем
+    file_bytes = file.read()
+    if storage.save_file(file_bytes, storage_path, content_type='image/jpeg'):
+        current_user.avatar_path = storage_path
+        current_user.save()
+        return jsonify({'success': True, 'avatar_url': current_user.to_dict()['avatar_url']})
+    else:
+        return jsonify({'error': 'Failed to save file'}), 500
+
+
+@api.route('/profile/avatar', methods=['DELETE'])
+@login_required
+def delete_avatar(current_user):
+    if current_user.avatar_path:
+        # Удаляем файл физически
+        storage.delete_file(current_user.avatar_path)
+        # Очищаем запись в БД
+        current_user.avatar_path = None
+        current_user.save()
+
+    return jsonify({
+        'success': True,
+        'avatar_url': current_user.to_dict()['avatar_url']  # Вернется ui-avatars
+    })
+
+
+# --- НОВОСТИ ---
+
+
+@api.route('/news', methods=['GET'])
+def get_news():
+    posts = NewsPost.select().order_by(NewsPost.created_at.desc()).limit(10)
+    return jsonify({'success': True, 'news': [p.to_dict() for p in posts]})
+
+
+@api.route('/news', methods=['POST'])
+@login_required
+@admin_required
+def create_news(current_user):
+    data = request.json
+    content = data.get('content')
+    if not content:
+        return jsonify({'error': 'Content is required'}), 400
+
+    NewsPost.create(author=current_user, content=content)
+    return jsonify({'success': True})
+
+
+# --- КОМНАТЫ ---
+
+
+@api.route('/rooms', methods=['GET'])
+@login_required
+def get_rooms(current_user):
+    """Список: Мои комнаты + Гостевые комнаты"""
+    from app.sockets import ROOM_STATE
+    from app import socketio
+
+    rooms_data = []
+    my_rooms = (Room
+                .select(Room, User)
+                .join(User)
+                .where(Room.owner == current_user))
+
+    for r in my_rooms:
+        data = r.to_dict()
+        data['is_owner'] = True  # Флаг для фронта
+        rooms_data.append(data)
+
+    banned_ids = RoomBan.select(RoomBan.room_id).where(RoomBan.user == current_user)
+
+    guest_rooms = (Room
+                    .select(Room, User)
+                    .join(User)
+                    .switch(Room)
+                    .join(RoomAccess)
+                    .where(
+                        (RoomAccess.user == current_user) &
+                        (Room.id.not_in(banned_ids))
+                    ))
+
+    for r in guest_rooms:
+        data = r.to_dict()
+        data['is_owner'] = False
+        rooms_data.append(data)
+
+    rooms_data.sort(key=lambda x: x['created_at'], reverse=True)
+
+    for r_dict in rooms_data:
+        room_uuid = r_dict['uuid']
+        try:
+            participants = socketio.server.manager.rooms.get('/', {}).get(room_uuid, set())
+            r_dict['online_count'] = len(participants)
+        except:
+            r_dict['online_count'] = 0
+
+        state = ROOM_STATE.get(room_uuid, {})
+        video_id = state.get('video_id')
+        current_video_title = None
+
+        if video_id:
+            try:
+                vid = Video.get_or_none(Video.id == video_id)
+                if vid: current_video_title = vid.title
+            except:
+                pass
+
+        r_dict['now_playing'] = current_video_title
+
+    return jsonify({'success': True, 'rooms': rooms_data})
+
+
+@api.route('/rooms', methods=['POST'])
+@login_required
+def create_room(current_user):
+    # 1. Проверяем, одобрен ли аккаунт
+    if current_user.status not in ['approved', 'admin']:
+        return jsonify({'error': 'Wait for admin approval'}), 403
+
+    current_count = Room.select().where(Room.owner == current_user).count()
+    if current_count >= AppConfig.MAX_ROOMS_COUNT:
+        return jsonify({
+                'error': f'Достигнут лимит комнат ({AppConfig.MAX_ROOMS_COUNT})',
+                'code': 'limit_reached'
+            }), 400
+
+    data = request.json or {}
+    name = data.get('name')
+
+    # Дефолтные значения и приведение типов
+    is_private = bool(data.get('is_private', False))
+    header_color = data.get('header_color', '#0d6efd')  # Синий по умолчанию
+    allow_guest_control = bool(data.get('allow_guest_control', False))
+
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+
+    try:
+        room = Room.create(
+            owner=current_user,
+            name=name,
+            is_private=is_private,
+            header_color=header_color,
+            allow_guest_control=allow_guest_control
+        )
+        return jsonify({'success': True, 'uuid': str(room.uuid)})
+
+    except Exception as e:
+        print(f"Error creating room: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@api.route('/rooms/<uuid:room_uuid>', methods=['GET'])
+@login_required
+def get_room_details(current_user, room_uuid):
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+
+        if RoomBan.select().where((RoomBan.room == room) & (RoomBan.user == current_user)).exists():
+            return jsonify({'error': 'You are banned from this room', 'code': 'banned'}), 403
+
+        is_owner = (room.owner == current_user)
+        is_admin = current_user.role == 'admin'
+
+        # Проверка доступа
+        has_access = True
+        if room.is_private:
+            if not is_owner:
+                # Проверяем в таблице RoomAccess
+                has_access = RoomAccess.select().where(
+                    (RoomAccess.room == room) &
+                    (RoomAccess.user == current_user)
+                ).exists()
+
+        # Если доступа нет, отдаем минимальную инфу (без видео)
+        if not has_access:
+            return jsonify({
+                'success': True,
+                'room': {
+                    'uuid': str(room.uuid),
+                    'name': room.name,
+                    'is_private': True,
+                    'owner_name': room.owner.username  # Чтобы знать, к кому стучаться
+                },
+                'videos': [],  # Не показываем видео
+                'is_owner': False,
+                'has_access': False  # Флаг для фронтенда
+            })
+
+        # Если доступ есть — отдаем всё как раньше
+        videos = Video.select().where(Video.room == room).order_by(Video.created_at)
+
+        return jsonify({
+            'success': True,
+            'room': room.to_dict(),
+            'videos': [v.to_dict() for v in videos],
+            'is_owner': is_owner,
+            'is_private': room.is_private,
+            'allow_guest_control': room.allow_guest_control,
+            'has_access': True
+        })
+
+    except Room.DoesNotExist:
+        redirect("/", 404)
+
+
+@api.route('/rooms/<uuid:room_uuid>', methods=['DELETE'])
+@login_required
+def delete_room(current_user, room_uuid):
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+
+        # Проверка прав: владелец или админ
+        if room.owner != current_user:
+            return jsonify({'error': 'Access denied'}), 403
+
+        room_folder = f"users/{room.owner_id}/rooms/{room.uuid}/"
+        delete_storage_folder_task.delay(room_folder)
+        room.delete_instance(recursive=True)
+
+        return jsonify({'success': True})
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+@api.route('/rooms/<uuid:room_uuid>', methods=['PUT'])
+@login_required
+def update_room_settings(current_user, room_uuid):
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        if room.owner != current_user:
+            return jsonify({'error': 'Access denied'}), 403
+
+        data = request.json
+
+        if 'name' in data: room.name = data['name']
+        if 'header_color' in data: room.header_color = data['header_color']
+        if 'is_private' in data: room.is_private = bool(data['is_private'])
+        if 'allow_guest_control' in data: room.allow_guest_control = bool(data['allow_guest_control'])
+
+        room.save()
+
+        # Уведомляем сокеты об обновлении (опционально, чтобы обновить заголовок у всех)
+        socketio.emit('room_updated', {
+            'name': room.name,
+            'header_color': room.header_color
+        }, to=str(room_uuid))
+
+        return jsonify({'success': True})
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+@api.route('/rooms/<uuid:room_uuid>/leave', methods=['DELETE'])
+@login_required
+def leave_room(current_user, room_uuid):
+    """Покинуть чужую комнату (удалить себя из RoomAccess)"""
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+
+        if room.owner == current_user:
+            return jsonify({'error': 'Owner cannot leave room, delete it instead'}), 400
+
+        query = RoomAccess.delete().where(
+            (RoomAccess.room == room) &
+            (RoomAccess.user == current_user)
+        )
+        deleted = query.execute()
+
+        if deleted:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'You are not in this room'}), 400
+
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+@api.route('/rooms/<uuid:room_uuid>/bans', methods=['GET'])
+@login_required
+def get_room_bans(current_user, room_uuid):
+    """Список забаненных"""
+    room = Room.get(Room.uuid == room_uuid)
+    if room.owner != current_user: return jsonify({'error': 'Access denied'}), 403
+
+    bans = RoomBan.select().where(RoomBan.room == room)
+    return jsonify({'success': True, 'bans': [{
+        'user_id': b.user.id,
+        'username': b.user.username,
+        'avatar_url': b.user.to_dict()['avatar_url']
+    } for b in bans]})
+
+
+@api.route('/rooms/<uuid:room_uuid>/bans', methods=['POST'])
+@login_required
+def ban_user_in_room(current_user, room_uuid):
+    """Забанить пользователя"""
+    room = Room.get(Room.uuid == room_uuid)
+    if room.owner != current_user: return jsonify({'error': 'Access denied'}), 403
+
+    target_id = request.json.get('user_id')
+    target_user = User.get_by_id(target_id)
+
+    if target_user == current_user:
+        return jsonify({'error': 'Cannot ban self'}), 400
+
+    RoomBan.get_or_create(room=room, user=target_user)
+
+    # Кикаем из сокетов
+    socketio.emit('you_are_banned', {}, to=f"user_{target_id}")
+
+    return jsonify({'success': True})
+
+
+@api.route('/rooms/<uuid:room_uuid>/bans/<int:user_id>', methods=['DELETE'])
+@login_required
+def unban_user_in_room(current_user, room_uuid, user_id):
+    """Разбанить"""
+    room = Room.get(Room.uuid == room_uuid)
+    if room.owner != current_user: return jsonify({'error': 'Access denied'}), 403
+
+    query = RoomBan.delete().where(
+        (RoomBan.room == room) &
+        (RoomBan.user_id == user_id)
+    )
+    query.execute()
+    return jsonify({'success': True})
+
+
+# --- ВИДЕО И ЗАГРУЗКА ---
+
+@api.route('/rooms/<uuid:room_uuid>/upload', methods=['POST'])
+@login_required
+def upload_video(current_user, room_uuid):
+    """Загрузка видеофайла"""
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        if room.owner != current_user:
+            return jsonify({'error': 'Only owner can upload'}), 403
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Room not found'}), 404
+
+    if 'video' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+
+    file = request.files['video']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    # --- ПРОВЕРКА 1: Лимит количества видео ---
+    video_count = Video.select().where(Video.room == room).count()
+    if video_count >= AppConfig.MAX_ROOM_VIDEOS:
+        return jsonify({
+            'error': f'В комнате максимум {AppConfig.MAX_ROOM_VIDEOS} видео. Удалите старые.',
+            'code': 'limit_reached'
+        }), 400
+
+    # --- ПРОВЕРКА 2: Размер одного файла ---
+    # Перематываем в конец, чтобы узнать реальный размер
+    file.seek(0, 2)
+    file_size = file.tell()
+    file.seek(0)
+
+    if file_size > AppConfig.MAX_VIDEO_SIZE_BYTES:
+        return jsonify({
+            'error': f'Файл слишком большой. Максимум {AppConfig.MAX_VIDEO_SIZE_MB} МБ.',
+            'code': 'file_too_large'
+        }), 400
+
+    # --- ПРОВЕРКА 3: Квота на комнату (3 ГБ) ---
+    current_storage_size = Video.select(fn.SUM(Video.file_size)).where(Video.room == room).scalar() or 0
+    if (current_storage_size + file_size) > AppConfig.MAX_ROOM_STORAGE_BYTES:
+        return jsonify({
+            'error': f'Превышен лимит хранилища комнаты ({AppConfig.MAX_ROOM_STORAGE_MB} МБ).',
+            'code': 'storage_limit_reached'
+        }), 400
+
+    # --- ПРОВЕРКА 4: Дубликаты (Хеш) ---
+    file_hash = calculate_file_hash(file)
+
+    # Ищем, есть ли видео с таким хешем в ЭТОЙ комнате
+    duplicate_exists = Video.select().where(
+        (Video.room == room) & (Video.file_hash == file_hash)
+    ).exists()
+
+    if duplicate_exists:
+        return jsonify({
+            'error': 'Такое видео уже есть в этой комнате.',
+            'code': 'duplicate_video'
+        }), 400
+
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+
+        # Создаем запись в БД с новыми полями
+        video = Video.create(
+            room=room,
+            title=filename,
+            storage_path='',
+            status='uploading',
+            file_hash=file_hash,
+            file_size=file_size,
+            # last_played_at инициализируется now() по умолчанию
+        )
+
+        temp_path = os.path.join(AppConfig.UPLOAD_FOLDER, f"temp_{video.id}_{filename}")
+        file.save(temp_path)
+
+        process_video_task.delay(video.id, temp_path)
+
+        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+        return jsonify({'success': True, 'message': 'Upload started', 'video_id': video.id})
+
+    return jsonify({'error': 'Invalid file type'}), 400
+
+
+@api.route('/videos/<int:video_id>', methods=['DELETE'])
+@login_required
+def delete_video(current_user, video_id):
+    try:
+        video = Video.get_by_id(video_id)
+
+        # Проверка прав: только владелец комнаты
+        if video.room.owner != current_user:
+            return jsonify({'error': 'Access denied'}), 403
+
+        owner_id = video.room.owner_id
+        room_uuid = video.room.uuid
+        video_folder = f"users/{owner_id}/rooms/{room_uuid}/videos/{video.id}/"
+        delete_storage_folder_task.delay(video_folder)
+        video.delete_instance()
+        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+        return jsonify({'success': True})
+    except Video.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+@api.route('/videos/<int:video_id>', methods=['PUT'])
+@login_required
+def rename_video(current_user, video_id):
+    """Переименование видео"""
+    try:
+        video = Video.get_by_id(video_id)
+        if video.room.is_private and (video.room.owner != current_user or video.room.allow_guest_control):
+            return jsonify({'error': 'Access denied'}), 403
+
+        data = request.json
+        new_title = data.get('title', '').strip()
+        if not new_title:
+            return jsonify({'error': 'Title cannot be empty'}), 400
+
+        video.title = new_title
+        video.save()
+        socketio.emit('playlist_refresh', {}, to=str(video.room.uuid))
+        return jsonify({'success': True, 'title': video.title})
+
+    except Video.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+
+# --- ADMIN PANEL ---
+
+
+@api.route('/admin/stats', methods=['GET'])
+@login_required
+@admin_required
+def get_admin_stats(current_user):
+    """Статистика для дашборда"""
+    stats = {
+        'users_total': User.select().count(),
+        'users_new': User.select().where(User.status == 'tg_verified').count(),
+        'rooms_total': Room.select().count(),
+        'videos_total': Video.select().count(),
+    }
+    return jsonify(stats)
+
+
+@api.route('/admin/users', methods=['GET'])
+@login_required
+@admin_required
+def get_all_users(current_user):
+    """Список пользователей"""
+    users = User.select().order_by(User.created_at.desc())
+    return jsonify({'users': [u.to_dict() for u in users]})
+
+
+@api.route('/admin/users/<int:user_id>/status', methods=['POST'])
+@login_required
+@admin_required
+def update_user_status(current_user, user_id):
+    """Бан / Разбан / Аппрув / Смена роли"""
+    data = request.json
+    new_status = data.get('status')
+    new_role = data.get('role')
+
+    try:
+        user = User.get_by_id(user_id)
+
+        # Защита: нельзя менять статус самому себе или супер-админу (защита от выстрела в ногу)
+        if user.id == current_user.id:
+            return jsonify({'error': 'Cannot change own status'}), 400
+
+        if new_status:
+            user.status = new_status
+            # Если аппрувим, записываем кто аппрувнул
+            if new_status == 'approved':
+                user.approved_by = current_user
+
+        if new_role:
+            user.role = new_role
+
+        user.save()
+        return jsonify({'success': True})
+    except User.DoesNotExist:
+        return jsonify({'error': 'User not found'}), 404
+
+
+@api.route('/admin/users/<int:user_id>', methods=['DELETE'])
+@login_required
+@admin_required
+def delete_user_force(current_user, user_id):
+    """Принудительное удаление пользователя админом"""
+    try:
+        user = User.get_by_id(user_id)
+        if user.id == current_user.id:
+            return jsonify({'error': 'Cannot delete self'}), 400
+
+        user_folder = f"users/{user.id}/"
+        delete_storage_folder_task.delay(user_folder)
+        user.delete_instance(recursive=True)
+        return jsonify({'success': True})
+    except User.DoesNotExist:
+        return jsonify({'error': 'User not found'}), 404

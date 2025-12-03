@@ -1,0 +1,336 @@
+/* #/static/css/dashboard.css */
+/* --- Dashboard Layout --- */
+.dashboard-container {
+    padding-top: 20px;
+}
+
+/* --- Tabs --- */
+.nav-tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--border-color);
+    padding-bottom: 10px;
+    overflow-x: auto;
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    padding: 10px 20px;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--text-muted);
+    border-radius: 6px;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.tab-btn:hover {
+    background-color: var(--bg-hover);
+}
+
+.tab-btn.active {
+    background-color: var(--primary-color);
+}
+
+.tab-btn.logout-btn {
+    margin-left: auto;
+    color: #dc3545;
+}
+
+.tab-btn.logout-btn:hover {
+    background-color: rgba(220, 53, 69, 0.1);
+}
+
+.tab-content {
+    display: none;
+    animation: fadeIn 0.3s;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* --- Rooms Grid (Плитки) --- */
+.rooms-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); /* Чуть шире */
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.room-card {
+    background: var(--bg-card);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    /* max-width: 240px;  */
+    width: 100%;
+}
+
+.room-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 16px var(--shadow-color);
+}
+
+.room-header {
+    /* Делаем шапку гибкой */
+    min-height: 80px;
+    width: 100%;
+    padding: 15px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: flex-end; /* Текст внизу */
+    word-break: break-word; /* Перенос слов */
+}
+
+.room-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: white; /* Текст всегда белый на цветном фоне */
+    text-shadow: 0 1px 3px rgba(0,0,0,0.3); /* Тень для читаемости */
+    line-height: 1.2;
+}
+
+.room-body {
+    padding: 15px;
+    flex: 1; /* Чтобы карточки были одной высоты */
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.room-info {
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Статус приватности */
+.room-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    background: rgba(0,0,0,0.05);
+    color: var(--text-muted);
+    width: fit-content;
+}
+
+/* --- Profile --- */
+.profile-card {
+    background: var(--bg-card);
+    padding: 30px;
+    border-radius: 12px;
+    max-width: 500px;
+    margin: 0 auto;
+    box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+.profile-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.profile-avatar {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    background: var(--bg-hover);
+    color: var(--text-muted);
+}
+
+.status-approved { background: #d4edda; color: #155724; }
+.status-new { background: #fff3cd; color: #856404; }
+.status-banned { background: #f8d7da; color: #721c24; }
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-main);
+    padding-bottom: 5px;
+}
+
+.tg-link-box {
+    margin-top: 15px;
+    padding: 10px;
+    background: var(--bg-hover);
+    color: var(--text-main);
+    border-radius: 6px;
+    text-align: center;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: white;
+}
+
+/* --- News --- */
+.news-post {
+    background: var(--bg-card);
+    border-left: 4px solid var(--primary-color);
+    color: var(--text-main);
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    border-left: 4px solid #007bff;
+}
+
+.news-meta {
+    font-size: 12px;
+    color: #999;
+    margin-bottom: 10px;
+}
+
+/* --- Access Denied Block --- */
+.access-denied {
+    text-align: center;
+    padding: 50px;
+    background: white;
+    border-radius: 12px;
+    margin-top: 20px;
+}
+
+/* --- Modal --- */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+}
+
+.modal-card {
+    background: var(--bg-card);
+    padding: 25px;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 400px;
+}
+
+.modal-card h3 {
+    color: var(--text-main);
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.color-picker-wrapper input {
+    width: 100%;
+    height: 40px;
+    border: none;
+    cursor: pointer;
+}
+
+.room-action-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    border: none;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 14px;
+    transition: transform 0.2s;
+}
+
+.room-action-btn:hover {
+    transform: scale(1.1);
+}
+
+.btn-delete {
+    background: rgba(220, 53, 69, 0.8); /* Красный полупрозрачный */
+    color: white;
+}
+
+.btn-leave {
+    background: rgba(255, 255, 255, 0.9); /* Белый */
+    color: #333;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+/* --- Avatar Upload Styles --- */
+.profile-avatar-wrapper {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    overflow: hidden;
+    cursor: pointer;
+    flex-shrink: 0; /* Чтобы не сжимало во flex контейнере */
+}
+
+.profile-avatar-wrapper:hover .avatar-overlay {
+    opacity: 1;
+}
+
+.avatar-overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    opacity: 0;
+    transition: opacity 0.2s;
+    font-size: 24px;
+}
+
+.cropper-container {
+    height: 300px; /* Фиксированная высота для области редактирования */
+    background: #333;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.btn-text-danger {
+    color: var(--danger-color);
+}
+.btn-text-danger:hover {
+    text-decoration: underline;
+}
+
+.editor-toolbar {
+    position: relative;
+    padding: 9px 10px;
+    border-top: 1px solid #ced4da;
+    border-left: 1px solid #ced4da;
+    border-right: 1px solid #ced4da;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    background-color: wheat;
+}

@@ -1,0 +1,222 @@
+<!-- #/templates/login.html -->
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="auth-wrapper">
+    <!-- Карточка Входа -->
+    <div id="login-form" class="auth-card">
+        <h2 class="auth-title">Вход</h2>
+
+        <div class="input-container">
+            <input type="text" id="login-username" class="input-field" placeholder=" " required>
+            <label for="login-username" class="input-label">Логин</label>
+        </div>
+
+        <div class="input-container">
+            <input type="password" id="login-password" class="input-field" placeholder=" " required>
+            <label for="login-password" class="input-label">Пароль</label>
+            <button type="button" class="toggle-password" id="btn-toggle-login"
+                    onclick="togglePasswordVisibility('btn-toggle-login', 'login-password')">
+                <!-- Иконка глаза (показать) -->
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="input-container captcha-container">
+            <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+                <!-- Картинка -->
+                <img id="captcha-img-login" src="/api/captcha"
+                     style="border-radius: 8px; height: 50px; cursor: pointer;"
+                     onclick="refreshCaptcha()" title="Нажмите, чтобы обновить">
+                <!-- Кнопка обновления -->
+                <button type="button" class="btn-secondary" style="width: 40px; margin:0; padding:0; height:50px;" onclick="refreshCaptcha()">↻</button>
+            </div>
+
+            <input type="text" id="login-captcha" class="input-field" placeholder=" " required autocomplete="off">
+            <label class="input-label">Код с картинки</label>
+        </div>
+
+        <button class="btn btn-primary" onclick="handleLogin()">Войти</button>
+
+        <p class="auth-switch">
+            Нет аккаунта? <span onclick="switchView('register')">Зарегистрироваться</span>
+        </p>
+    </div>
+
+    <!-- Карточка Регистрации (скрыта) -->
+    <div id="register-form" class="auth-card" style="display: none;">
+        <h2 class="auth-title">Регистрация</h2>
+
+        <div class="input-container">
+            <input type="text" id="reg-username" class="input-field" placeholder=" " required>
+            <label for="reg-username" class="input-label">Логин</label>
+        </div>
+
+        <div class="input-container">
+            <input type="password" id="reg-password" class="input-field" placeholder=" "
+                   oninput="updatePasswordStrength('reg-password', 'password-bar')" required>
+            <label for="reg-password" class="input-label">Пароль</label>
+
+            <button type="button" class="toggle-password" id="btn-toggle-reg"
+                    onclick="togglePasswordVisibility('btn-toggle-reg', 'reg-password')">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                </svg>
+            </button>
+
+            <!-- Полоска силы пароля -->
+            <div class="password-strength">
+                <div class="password-strength-bar" id="password-bar"></div>
+            </div>
+        </div>
+
+        <!-- Чекбокс куки и политики -->
+        <div class="checkbox-container" style="align-items: flex-start;">
+            <input type="checkbox" id="cookie-consent" style="margin-top: 3px;">
+            <label for="cookie-consent" style="line-height: 1.4;">
+                Я согласен на использование cookie файлов и принимаю
+                <a href="/policy" target="_blank" style="color: var(--primary-color); text-decoration: underline;">Политику и Условия использования</a>.
+            </label>
+        </div>
+
+        <div class="input-container captcha-container">
+            <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+                <img id="captcha-img-reg" src="/api/captcha"
+                     style="border-radius: 8px; height: 50px; cursor: pointer;"
+                     onclick="refreshCaptcha()" title="Нажмите, чтобы обновить">
+                <button type="button" class="btn-secondary" style="width: 40px; margin:0; padding:0; height:50px;" onclick="refreshCaptcha()">↻</button>
+            </div>
+
+            <input type="text" id="reg-captcha" class="input-field" placeholder=" " required autocomplete="off">
+            <label class="input-label">Код с картинки</label>
+        </div>
+
+        <button class="btn btn-primary" onclick="handleRegister()">Создать аккаунт</button>
+
+        <p class="auth-switch">
+            Уже есть аккаунт? <span onclick="switchView('login')">Войти</span>
+        </p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // --- Логика переключения форм ---
+    function switchView(view) {
+        const loginForm = document.getElementById('login-form');
+        const regForm = document.getElementById('register-form');
+
+        if (view === 'register') {
+            loginForm.style.display = 'none';
+            regForm.style.display = 'block';
+        } else {
+            regForm.style.display = 'none';
+            loginForm.style.display = 'block';
+        }
+    }
+
+    // --- Обновление капчи ---
+    function refreshCaptcha() {
+        // Добавляем случайное число, чтобы браузер не кешировал картинку
+        const url = `/api/captcha?t=${new Date().getTime()}`;
+        document.getElementById('captcha-img-login').src = url;
+        document.getElementById('captcha-img-reg').src = url;
+
+        // Очищаем поля
+        document.getElementById('login-captcha').value = '';
+        document.getElementById('reg-captcha').value = '';
+    }
+
+    // --- Логика Входа ---
+    async function handleLogin() {
+        const username = document.getElementById('login-username').value;
+        const password = document.getElementById('login-password').value;
+        const captcha = document.getElementById('login-captcha').value; // <-- Берем значение
+
+        if (!username || !password || !captcha) {
+            showError('Заполните все поля');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ username, password, captcha }) // <-- Отправляем
+            });
+            const data = await res.json();
+
+            if (res.ok) {
+                window.location.href = '/';
+            } else {
+                showError(data.error || 'Ошибка входа');
+                refreshCaptcha(); // Обновляем капчу при ошибке, т.к. старая сгорает
+            }
+        } catch (e) {
+            showError('Ошибка сети');
+            console.error(e);
+        }
+    }
+
+    // --- Логика Регистрации ---
+    async function handleRegister() {
+        const username = document.getElementById('reg-username').value;
+        const password = document.getElementById('reg-password').value;
+        const cookieConsent = document.getElementById('cookie-consent').checked;
+        const captcha = document.getElementById('reg-captcha').value; // <-- Берем значение
+
+        if (!username || !password || !captcha) {
+            showError('Заполните все поля');
+            return;
+        }
+
+        if (!cookieConsent) {
+            showError('Необходимо согласиться с использованием cookie');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username,
+                    password,
+                    cookie_consent: cookieConsent,
+                    captcha: captcha // <-- Отправляем
+                })
+            });
+            const data = await res.json();
+
+            if (res.ok) {
+                showSuccess('Регистрация успешна! Выполняется вход...');
+                setTimeout(() => { window.location.href = '/'; }, 1000);
+            } else {
+                showError(data.error || 'Ошибка регистрации');
+                refreshCaptcha(); // Обновляем при ошибке
+            }
+        } catch (e) {
+            showError('Ошибка сети');
+            console.error(e);
+        }
+    }
+
+    const originalSwitchView = switchView; // Сохраним старую, если есть, или просто перепишем
+    switchView = function(view) {
+        const loginForm = document.getElementById('login-form');
+        const regForm = document.getElementById('register-form');
+
+        if (view === 'register') {
+            loginForm.style.display = 'none';
+            regForm.style.display = 'block';
+        } else {
+            regForm.style.display = 'none';
+            loginForm.style.display = 'block';
+        }
+        refreshCaptcha(); // <-- Обновляем картинку
+    }
+</script>
+{% endblock %}
