@@ -669,8 +669,7 @@ function renderPlaylist(videos) {
         const safeTitle = v.title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
         let fct = false;
-        if (isOwner) { fct = true; }
-        if (isPrivate && isAllowedGuestControl) { fct = true; }
+        if (isOwner || isAllowedGuestControl) { fct = true; }
 
         const controls = fct ? `
             <div class="item-actions">

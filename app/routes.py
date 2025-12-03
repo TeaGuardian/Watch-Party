@@ -742,7 +742,7 @@ def rename_video(current_user, video_id):
     """Переименование видео"""
     try:
         video = Video.get_by_id(video_id)
-        if video.room.is_private and (video.room.owner != current_user or video.room.allow_guest_control):
+        if video.room.owner != current_user and not video.room.allow_guest_control:
             return jsonify({'error': 'Access denied'}), 403
 
         data = request.json
