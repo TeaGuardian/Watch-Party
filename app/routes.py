@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.models import Room, Video, NewsPost, User, RoomAccess, db
 from core.validators import validate_password_strength
 from config import BotConfig, AppConfig
-from tasks.media import process_video_task, delete_storage_folder_task
+from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -206,17 +206,38 @@ def unlink_telegram(current_user):
 @api.route('/account', methods=['DELETE'])
 @login_required
 def delete_account(current_user):
-    """Удаление аккаунта"""
+    """Удаление аккаунта с очисткой общих файлов"""
     if current_user.status == 'banned':
         return jsonify({'error': 'Cannot delete banned account'}), 403
 
     user_id = current_user.id
-    user_folder = f"users/{user_id}/"
-    delete_storage_folder_task.delay(user_folder)
+
+    # 1. Сбор мусора: Ищем видео пользователя, которые используют Shared Content
+    user_videos = Video.select().where(Video.room.in_(current_user.rooms))
+    hashes_to_check = set()
+
+    for v in user_videos:
+        if v.file_hash:
+            hashes_to_check.add(v.file_hash)
+
+    # 2. Удаляем записи из БД
     current_user.delete_instance(recursive=True)
 
+    # 3. Проверяем хеши на сиротство
+    for f_hash in hashes_to_check:
+        count = Video.select().where(Video.file_hash == f_hash).count()
+        if count == 0:
+            # Никто больше не использует -> удаляем физически
+            folder_to_delete = f"{AppConfig.SHARED_CONTENT_PATH}/{f_hash}/"
+            print(f"🗑️ Account deletion orphaned a file. Scheduling delete: {folder_to_delete}")
+            delete_storage_folder_task.delay(folder_to_delete)
+
+    # 4. Удаляем личную папку (аватарки, старое легаси видео)
+    user_folder = f"users/{user_id}/"
+    delete_account_files_task.delay(user_id)  # Здесь передаем ID, а не путь, это безопаснее
+
     session.clear()
-    return jsonify({'success': True, 'message': 'Account and files scheduled for deletion'})
+    return jsonify({'success': True, 'message': 'Account deleted and cleanup scheduled'})
 
 
 @api.route('/profile/avatar', methods=['POST'])
@@ -575,7 +596,7 @@ def upload_video(current_user, room_uuid):
     """Загрузка видеофайла"""
     try:
         room = Room.get(Room.uuid == room_uuid)
-        if room.owner != current_user:
+        if room.owner != current_user and not room.allow_guest_control:
             return jsonify({'error': 'Only owner can upload'}), 403
     except Room.DoesNotExist:
         return jsonify({'error': 'Room not found'}), 404
@@ -618,21 +639,48 @@ def upload_video(current_user, room_uuid):
     # --- ПРОВЕРКА 4: Дубликаты (Хеш) ---
     file_hash = calculate_file_hash(file)
 
-    # Ищем, есть ли видео с таким хешем в ЭТОЙ комнате
-    duplicate_exists = Video.select().where(
+    # 4.1 Проверяем дубли ВНУТРИ комнаты (запрещаем)
+    duplicate_in_room = Video.select().where(
         (Video.room == room) & (Video.file_hash == file_hash)
     ).exists()
 
-    if duplicate_exists:
+    if duplicate_in_room:
         return jsonify({
             'error': 'Такое видео уже есть в этой комнате.',
             'code': 'duplicate_video'
         }), 400
 
+    # 4.2 Проверяем дубли ГЛОБАЛЬНО (для переиспользования)
+    # Ищем любое ГОТОВОЕ видео с таким же хэшем
+    existing_source = Video.select().where(
+        (Video.file_hash == file_hash) &
+        (Video.status == 'ready')
+    ).first()
+
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
 
-        # Создаем запись в БД с новыми полями
+        # Если файл уже есть на сервере -> Мгновенное создание
+        if existing_source:
+            print(f"♻️ Fast-upload (Deduplication): Using content from video {existing_source.id}")
+            video = Video.create(
+                room=room,
+                title=filename,
+                storage_path=existing_source.storage_path,  # Копируем путь
+                status='ready',  # Сразу готово
+                file_hash=file_hash,
+                file_size=file_size,  # Берем размер из текущей загрузки (он проверен)
+                duration=existing_source.duration  # Копируем длительность
+            )
+
+            socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+            return jsonify({
+                'success': True,
+                'message': 'Video added instantly (deduplicated)',
+                'video_id': video.id
+            })
+
+        # Если файла нет -> Полная загрузка
         video = Video.create(
             room=room,
             title=filename,
@@ -640,16 +688,12 @@ def upload_video(current_user, room_uuid):
             status='uploading',
             file_hash=file_hash,
             file_size=file_size,
-            # last_played_at инициализируется now() по умолчанию
         )
 
         temp_path = os.path.join(AppConfig.UPLOAD_FOLDER, f"temp_{video.id}_{filename}")
         file.save(temp_path)
-
         process_video_task.delay(video.id, temp_path)
-
         socketio.emit('playlist_refresh', {}, to=str(room_uuid))
-
         return jsonify({'success': True, 'message': 'Upload started', 'video_id': video.id})
 
     return jsonify({'error': 'Invalid file type'}), 400
@@ -660,19 +704,34 @@ def upload_video(current_user, room_uuid):
 def delete_video(current_user, video_id):
     try:
         video = Video.get_by_id(video_id)
-
-        # Проверка прав: только владелец комнаты
-        if video.room.owner != current_user:
+        if video.room.owner != current_user and not video.room.allow_guest_control:
             return jsonify({'error': 'Access denied'}), 403
 
-        owner_id = video.room.owner_id
         room_uuid = video.room.uuid
-        video_folder = f"users/{owner_id}/rooms/{room_uuid}/videos/{video.id}/"
-        delete_storage_folder_task.delay(video_folder)
-        video.delete_instance()
-        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+        file_hash = video.file_hash
 
+        # --- УМНОЕ УДАЛЕНИЕ ---
+        other_refs_count = Video.select().where(
+            (Video.file_hash == file_hash) &
+            (Video.id != video.id)
+        ).count()
+
+        if other_refs_count == 0 and video.storage_path:
+            folder_to_delete = os.path.dirname(video.storage_path)
+            if folder_to_delete:
+                if not folder_to_delete.endswith('/'): folder_to_delete += '/'
+
+                print(f"🗑️ Deleting last reference to physical files: {folder_to_delete}")
+                delete_storage_folder_task.delay(folder_to_delete)
+        else:
+            print(f"🛡️ Keep physical files. Used by {other_refs_count} other videos.")
+
+        # Удаляем запись из БД (в любом случае)
+        video.delete_instance()
+
+        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
         return jsonify({'success': True})
+
     except Video.DoesNotExist:
         return jsonify({'error': 'Not found'}), 404
 

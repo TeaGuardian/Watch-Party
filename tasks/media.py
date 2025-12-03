@@ -19,100 +19,133 @@ logger = logging.getLogger("CeleryMedia")
 
 @app.task(name='tasks.media.process_video')
 def process_video_task(video_id: int, local_source_path: str):
-    """
-    Конвертирует видео в HLS (m3u8) и загружает в хранилище.
-    """
     logger.info(f"Start processing video {video_id} from {local_source_path}")
 
-    # 1. Получаем видео из БД
+    # [NEW] Проверка 1: А не удалил ли пользователь видео, пока оно стояло в очереди?
     try:
         video = Video.get_by_id(video_id)
     except Exception:
-        logger.error(f"Video {video_id} not found inside task")
+        logger.info(f"Video {video_id} record missing. Cancelling processing (User deleted it?).")
+        if os.path.exists(local_source_path):
+            os.remove(local_source_path)
         return
 
     video.status = 'processing'
     video.save()
 
-    # Папки
-    # Уникальная временная папка для нарезки сегментов
     transcode_dir = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode", str(uuid4()))
     os.makedirs(transcode_dir, exist_ok=True)
-
-    # Имя выходного плейлиста
     playlist_name = "index.m3u8"
     output_path = os.path.join(transcode_dir, playlist_name)
 
     try:
-        # 2. Запуск FFmpeg
+        # [NEW] Проверка 2: Перед тяжелым FFmpeg еще раз проверим (если очередь была долгой)
+        if not Video.select().where(Video.id == video_id).exists():
+            raise Exception("Video deleted by user before transcoding")
+
         command = [
             'ffmpeg', '-y', '-i', local_source_path,
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',  # Видео кодек
-            '-c:a', 'aac', '-b:a', '128k',  # Аудио кодек
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
             '-hls_time', '6',
             '-hls_playlist_type', 'vod',
             '-hls_segment_filename', os.path.join(transcode_dir, 'segment_%03d.ts'),
             output_path
         ]
 
-        logger.info(f"Running ffmpeg: {' '.join(command)}")
+        # Получаем длительность через ffprobe (опционально, но полезно)
+        # Здесь опустим для краткости, оставим 0 или старую логику
 
-        # Запускаем процесс и ждем завершения
         process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
         if process.returncode != 0:
             raise Exception(f"FFmpeg failed: {process.stderr.decode()}")
 
-        # 3. Загрузка результатов в Storage
-        # Структура: user_{id}/room_{uuid}/video_{id}/...
-        room: Room = video.room
-        user: User = room.owner
+        # [NEW] Проверка 3: Пользователь мог удалить видео ВО ВРЕМЯ обработки
+        if not Video.select().where(Video.id == video_id).exists():
+            raise Exception("Video deleted by user during transcoding")
 
-        # Путь в хранилище (префикс папки)
-        storage_folder = f"users/{user.id}/rooms/{room.uuid}/videos/{video.id}/"
+        # 3. Загрузка.
+        # [NEW] Используем путь на основе ХЭША, а не ID видео
+        # Если хэша нет (старое видео или баг), фолбэк на старую логику, но у нас он есть.
+        if video.file_hash:
+            storage_folder = f"{AppConfig.SHARED_CONTENT_PATH}/{video.file_hash}/"
+        else:
+            # Fallback (не должно случаться при новом коде)
+            storage_folder = f"users/{video.room.owner_id}/rooms/{video.room.uuid}/videos/{video.id}/"
 
-        # Проходим по всем созданным файлам (.m3u8 и .ts)
         for filename in os.listdir(transcode_dir):
             file_path = os.path.join(transcode_dir, filename)
             if os.path.isfile(file_path):
                 with open(file_path, 'rb') as f:
                     content = f.read()
-
-                # Сохраняем (LocalStorage или MinIO - неважно, метод один)
                 dest_path = storage_folder + filename
-                success = storage.save_file(content, dest_path)
+                if not storage.save_file(content, dest_path):
+                    raise Exception(f"Failed to upload {filename}")
 
-                if not success:
-                    raise Exception(f"Failed to upload segment {filename}")
+        # 4. Финиш
+        # Еще раз перечитываем запись, чтобы не перезатереть возможные изменения (мало ли)
+        # Но peewee объекты не обновляются сами.
+        video = Video.get_by_id(video_id)
 
-        # 4. Обновляем статус в БД
         video.status = 'ready'
-        # Ссылка на плейлист (относительный путь для storage.get_url)
         full_path = storage_folder + playlist_name
         video.storage_path = full_path.replace('\\', '/')
 
+        # Попытка достать duration из метаданных (упрощенно - размер сегментов * кол-во)
+        # Или просто оставим как есть.
+
         video.save()
-        logger.info(f"Video {video_id} processed successfully.")
+        logger.info(f"Video {video_id} processed successfully. Stored at {storage_folder}")
 
     except Exception as e:
-        logger.error(f"Processing failed: {e}")
-        video.status = 'error'
-        video.save()
+        logger.error(f"Processing interrupted/failed: {e}")
+        # Если ошибка "Video deleted...", то запись в БД уже нет, save() упадет.
+        # Проверяем существование перед обновлением статуса
+        try:
+            v = Video.get_or_none(Video.id == video_id)
+            if v:
+                v.status = 'error'
+                v.save()
+        except:
+            pass
 
     finally:
-        # 5. Очистка временных файлов
         if os.path.exists(transcode_dir):
             shutil.rmtree(transcode_dir)
-
         if os.path.exists(local_source_path):
             os.remove(local_source_path)
 
 
 @app.task(name='tasks.media.delete_storage_folder')
 def delete_storage_folder_task(path: str):
-    if not path: return
+    """
+    Безопасное удаление папки.
+    Если папка относится к shared_content, проверяем БД: не используется ли она?
+    """
+    if not path:
+        return
+
+    clean_path = path.strip("/").replace("\\", "/")
+    if not clean_path or clean_path == "." or clean_path == "users" or clean_path == AppConfig.SHARED_CONTENT_PATH:
+        logger.critical(f"🛑 ATTEMPT TO DELETE PROTECTED PATH BLOCKED: {path}")
+        return
+
+    if AppConfig.SHARED_CONTENT_PATH in clean_path:
+        logger.info(f"🛡️ Safety check for shared content: {clean_path}")
+        in_use_count = Video.select().where(
+            Video.storage_path.startswith(clean_path)
+        ).count()
+
+        if in_use_count > 0:
+            logger.warning(
+                f"🛑 ABORT DELETE: Storage folder '{clean_path}' is still in use by {in_use_count} videos in DB.")
+            return
+
     logger.info(f"Deleting storage folder: {path}")
+
+    # Рекурсивное удаление
     success = storage.delete_folder(path)
+
     if success:
         logger.info(f"Successfully deleted: {path}")
     else:
@@ -121,9 +154,18 @@ def delete_storage_folder_task(path: str):
 
 @app.task(name='tasks.media.delete_account_files')
 def delete_account_files_task(user_id: int):
-    logger.info(f"Deleting files for user {user_id}")
+    """
+    Удаляет личную папку пользователя (аватарки, старые видео).
+    НЕ трогает shared_content.
+    """
+    logger.info(f"Deleting personal files for user {user_id}")
     folder_prefix = f"users/{user_id}/"
+    if not str(user_id).isdigit():
+        logger.error(f"Invalid user_id: {user_id}")
+        return
+
     success = storage.delete_folder(folder_prefix)
+
     if success:
         logger.info(f"Successfully deleted files for user {user_id}")
     else:
@@ -132,40 +174,40 @@ def delete_account_files_task(user_id: int):
 
 @app.task(name='tasks.media.cleanup_old_videos')
 def cleanup_old_videos_task():
-    """
-    Удаляет видео, которые не использовались более 2 часов.
-    Пропускаем видео, которые еще в обработке или загрузке.
-    """
     logger.info("Starting cleanup of old videos...")
+    cutoff_time = datetime.now() - timedelta(hours=1)
 
-    cutoff_time = datetime.now() - timedelta(hours=2)
-
-    # Ищем видео, где last_played_at старее 2 часов и статус 'ready'
-    # Также можно проверять created_at, чтобы не удалять только что загруженные,
-    # но last_played_at инициализируется now(), так что свежие видео не попадут.
     old_videos = Video.select().where(
         (Video.last_played_at < cutoff_time) &
         (Video.status == 'ready')
     )
 
-    deleted_count = 0
+    deleted_records = 0
+    deleted_files = 0
+
     for video in old_videos:
         try:
-            logger.info(f"Cleaning up inactive video {video.id} (last played: {video.last_played_at})")
+            file_hash = video.file_hash
+            logger.info(f"Processing cleanup for video {video.id} (hash: {file_hash})")
+            other_refs_count = Video.select().where(
+                (Video.file_hash == file_hash) &
+                (Video.id != video.id)
+            ).count()
 
-            # Удаляем файлы
-            owner_id = video.room.owner_id
-            room_uuid = video.room.uuid
-            video_folder = f"users/{owner_id}/rooms/{room_uuid}/videos/{video.id}/"
+            if other_refs_count == 0:
+                if video.storage_path:
+                    folder_path = os.path.dirname(video.storage_path)
+                    if not folder_path.endswith('/'): folder_path += '/'
 
-            # Синхронное удаление, так как мы уже внутри celery задачи
-            storage.delete_folder(video_folder)
-
-            # Удаляем запись
+                    logger.info(f"Removing physical files at {folder_path}")
+                    if storage.delete_folder(folder_path):
+                        deleted_files += 1
+            else:
+                logger.info(f"Skipping physical deletion (used by {other_refs_count} others)")
             video.delete_instance()
-            deleted_count += 1
+            deleted_records += 1
 
         except Exception as e:
             logger.error(f"Error cleaning video {video.id}: {e}")
 
-    logger.info(f"Cleanup finished. Deleted {deleted_count} videos.")
+    logger.info(f"Cleanup finished. Records removed: {deleted_records}. File groups removed: {deleted_files}.")

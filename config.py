@@ -11,6 +11,7 @@ class AppConfig:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     UPLOAD_FOLDER = os.path.join(BASE_DIR, "storage", "uploads")
     LOCAL_STORAGE_PATH = os.path.join(BASE_DIR, "storage", "saved_files")
+    SHARED_CONTENT_PATH = "shared_content"
 
     # БЕЗОПАСНОСТЬ
     MAX_OPENED_ROOMS = int(os.getenv("MAX_OPENED_ROOMS", 2))
