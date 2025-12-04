@@ -85,14 +85,14 @@ def create_app():
         if r_uuid_str not in user_conns and len(user_conns) >= AppConfig.MAX_OPENED_ROOMS:
             return redirect('/')
 
-        # [NEW] 4. Выбор шаблона
+        # 4. Выбор шаблона
         template_name = 'voiced_room.html' if room.has_voice_chat else 'room.html'
 
         return render_template(template_name,
                                room_uuid=str(room_uuid),
                                max_video_size=AppConfig.MAX_VIDEO_SIZE_BYTES,
+                               video_retention_hours=AppConfig.MAX_VIDEO_RETENTION_HOURS,
                                current_user=current_user)
-
     @app.route('/content/<path:filename>')
     def serve_content(filename):
         if StorageConfig.USE_S3:

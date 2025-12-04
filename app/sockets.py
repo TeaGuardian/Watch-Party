@@ -116,7 +116,7 @@ def get_current_user():
 
 @socketio.on('connect')
 @db_session
-def on_connect():
+def on_connect(*args, **kwargs):
     user = get_current_user()
     if user:
         join_room(f"user_{user.id}")

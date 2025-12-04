@@ -302,6 +302,22 @@ async function deleteAvatar() {
 
 // --- News Section ---
 
+function formatLocalDate(isoString) {
+    if (!isoString) return '';
+    try {
+        const date = new Date(isoString);
+        return date.toLocaleString('ru-RU', {
+            day: '2-digit',
+            month: 'long',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    } catch (e) {
+        return isoString;
+    }
+}
+
 let allNewsCache = [];
 
 async function loadNews() {
@@ -329,7 +345,7 @@ async function loadNews() {
             return `
             <div class="news-post">
                 <div class="news-meta" style="display:flex; justify-content:space-between; align-items:center;">
-                    <span><strong>${post.author}</strong> • ${post.created_at}</span>
+                    <span><strong>${post.author}</strong> • ${formatLocalDate(post.created_at)}</span>
                     ${editBtn}
                 </div>
                 <!-- Добавляем класс markdown-body для красивых отступов списков и цитат -->

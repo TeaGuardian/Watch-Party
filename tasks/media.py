@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import socketio
 import logging
 from uuid import uuid4
 from datetime import datetime, timedelta
@@ -175,7 +176,8 @@ def delete_account_files_task(user_id: int):
 @app.task(name='tasks.media.cleanup_old_videos')
 def cleanup_old_videos_task():
     logger.info("Starting cleanup of old videos...")
-    cutoff_time = datetime.now() - timedelta(hours=1)
+    retention_hours = AppConfig.MAX_VIDEO_RETENTION_HOURS
+    cutoff_time = datetime.now() - timedelta(hours=retention_hours)
 
     old_videos = Video.select().where(
         (Video.last_played_at < cutoff_time) &
@@ -184,10 +186,12 @@ def cleanup_old_videos_task():
 
     deleted_records = 0
     deleted_files = 0
+    affected_rooms = set()
 
     for video in old_videos:
         try:
             file_hash = video.file_hash
+            room_uuid = str(video.room.uuid)
             logger.info(f"Processing cleanup for video {video.id} (hash: {file_hash})")
             other_refs_count = Video.select().where(
                 (Video.file_hash == file_hash) &
@@ -206,8 +210,16 @@ def cleanup_old_videos_task():
                 logger.info(f"Skipping physical deletion (used by {other_refs_count} others)")
             video.delete_instance()
             deleted_records += 1
+            affected_rooms.add(room_uuid)
 
         except Exception as e:
             logger.error(f"Error cleaning video {video.id}: {e}")
 
+    for r_uuid in affected_rooms:
+        try:
+            # Шлем событие 'playlist_refresh' в комнату
+            socketio.emit('playlist_refresh', {}, to=r_uuid)
+            logger.info(f"Notified room {r_uuid} about auto-deletion")
+        except Exception as e:
+            logger.error(f"Failed to emit socket to {r_uuid}: {e}")
     logger.info(f"Cleanup finished. Records removed: {deleted_records}. File groups removed: {deleted_files}.")

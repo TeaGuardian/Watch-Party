@@ -21,7 +21,7 @@ from .decorators import login_required, admin_required
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchStat
-from core.cache import get_cache, set_cache
+from core.cache import get_cache, set_cache, delete_cache
 from core.validators import validate_password_strength
 from config import BotConfig, AppConfig
 from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task
@@ -870,10 +870,10 @@ def get_admin_stats(current_user):
 
     # 2. Считаем (Тяжелые операции)
     total_seconds = DailyWatchStat.select(fn.SUM(DailyWatchStat.total_seconds)).scalar() or 0
-    total_hours = round(total_seconds / 3600, 1)
+    total_hours = float(round(total_seconds / 3600, 1))
 
     total_storage_bytes = Video.select(fn.SUM(Video.file_size)).scalar() or 0
-    total_storage_gb = round(total_storage_bytes / (1024 ** 3), 2)
+    total_storage_gb = float(round(total_storage_bytes / (1024 ** 3), 2))
 
     stats = {
         'users_total': User.select().count(),
@@ -910,7 +910,7 @@ def get_all_users(current_user):
         # Тяжелый подзапрос для каждого юзера
         total_sec = DailyWatchStat.select(fn.SUM(DailyWatchStat.total_seconds)).where(
             DailyWatchStat.user == u).scalar() or 0
-        total_hours = round(total_sec / 3600, 1)
+        total_hours = float(round(total_sec / 3600, 1))
 
         d = u.to_dict()
         d['total_hours'] = total_hours

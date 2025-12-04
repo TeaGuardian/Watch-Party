@@ -33,6 +33,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 5. Запускаем Heartbeat (отправка статуса каждые 2 сек)
     setInterval(sendHeartbeat, 2000);
     setInterval(cleanupViewers, 5000);
+    setInterval(() => {
+        console.log("🔄 Periodic room refresh (10 min)");
+        loadRoomData();
+    }, 10 * 60 * 1000);
 });
 
 async function loadUserInfo() {
@@ -681,6 +685,8 @@ function addSystemMessage(text) {
 
 /* --- Playlist & Upload --- */
 
+setInterval(updateTTLCounters, 60000);
+
 function renderPlaylist(videos) {
     const container = document.getElementById('playlist-container');
     if (videos.length === 0) {
@@ -688,20 +694,18 @@ function renderPlaylist(videos) {
         return;
     }
 
-    // Сохраняем текущее видео, чтобы не сбить подсветку при обновлении
     const activeId = currentVideoId;
 
     container.innerHTML = videos.map(v => {
-        // Делаем элемент неактивным визуально, если видео не готово
         const isReady = v.status === 'ready';
         const itemClass = `video-item ${v.id === activeId ? 'active' : ''} ${!isReady ? 'disabled' : ''}`;
         const durationText = isReady ? formatDuration(v.duration) : '';
 
-        // Индикатор статуса
+        // Статусы
         let statusBadge = '';
-        if (v.status === 'processing') statusBadge = '⏳ Обработка...';
-        else if (v.status === 'uploading') statusBadge = '⬆️ Загрузка...';
-        else if (v.status === 'error') statusBadge = '❌ Ошибка';
+        if (v.status === 'processing') statusBadge = '<span style="color:orange">⏳ Обработка...</span>';
+        else if (v.status === 'uploading') statusBadge = '<span style="color:#3498db">⬆️ Загрузка...</span>';
+        else if (v.status === 'error') statusBadge = '<span style="color:red">❌ Ошибка</span>';
 
         const safeTitle = v.title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
@@ -715,6 +719,12 @@ function renderPlaylist(videos) {
             </div>
         ` : '';
 
+        // [NEW] Расчет TTL (времени жизни)
+        let ttlHtml = '';
+        if (isReady && v.last_played_at) {
+            ttlHtml = `<div class="ttl-timer" data-last-played="${v.last_played_at}"></div>`;
+        }
+
         return `
         <div class="${itemClass}"
              data-id="${v.id}"
@@ -723,15 +733,53 @@ function renderPlaylist(videos) {
 
             <div class="video-item-info">
                 <div class="video-title" title="${v.title}">${v.title}</div>
-                <div class="video-status">
-                    ${statusBadge || durationText}
-                    ${v.size_mb ? `<span style="margin-left:5px; opacity:0.7;">(${v.size_mb} MB)</span>` : ''}
+                <div class="video-status" style="display:flex; justify-content:space-between; align-items:center; padding-right:10px;">
+                    <div>
+                        ${statusBadge || durationText}
+                        ${v.size_mb ? `<span style="margin-left:5px; opacity:0.7;">(${v.size_mb} MB)</span>` : ''}
+                    </div>
+                    ${ttlHtml} <!-- Таймер здесь -->
                 </div>
             </div>
             ${controls}
         </div>
         `;
     }).join('');
+
+    // Сразу обновляем таймеры после рендера
+    updateTTLCounters();
+}
+
+// Функция обновления таймеров жизни
+function updateTTLCounters() {
+    const timers = document.querySelectorAll('.ttl-timer');
+    const retentionMs = RETENTION_HOURS * 60 * 60 * 1000;
+    const now = new Date().getTime();
+
+    timers.forEach(el => {
+        const lastPlayedStr = el.getAttribute('data-last-played');
+        if (!lastPlayedStr) return;
+
+        // lastPlayedStr приходит в ISO (UTC или локальное сервера),
+        // JS Date.parse обычно корректно это ест.
+        const lastPlayedTs = new Date(lastPlayedStr).getTime();
+        const deathTime = lastPlayedTs + retentionMs;
+        const diff = deathTime - now;
+
+        if (diff <= 0) {
+            el.innerHTML = '<span style="color:red; font-size:10px;">Удаление...</span>';
+        } else {
+            // Форматируем остаток
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+            let color = '#888'; // Обычный серый
+            if (hours === 0 && minutes < 30) color = 'orange';
+            if (hours === 0 && minutes < 10) color = 'red';
+
+            el.innerHTML = `<span style="color:${color}; font-size:10px;" title="Автоудаление через...">♻️ ${hours}ч ${minutes}м</span>`;
+        }
+    });
 }
 
 async function renameVideo(e, id, oldTitle) {

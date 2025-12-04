@@ -134,7 +134,9 @@
 <!-- Данные для JS -->
 <script>
     const ROOM_UUID = "{{ room_uuid }}";
-    const MAX_VIDEO_SIZE = {{ max_video_size }}; // Flask подставит число
+    const MAX_VIDEO_SIZE = {{ max_video_size }};
+    const USER_ID = {{ current_user.id }};
+    const RETENTION_HOURS = {{ video_retention_hours }};
 </script>
 {% endblock %}
 

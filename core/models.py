@@ -141,6 +141,9 @@ class Video(BaseModel):
     def to_dict(self):
         from core.storage import storage
         url = storage.get_url(self.storage_path) if self.status == 'ready' else None
+        last_played_iso = self.last_played_at.isoformat()
+        if not last_played_iso.endswith('Z') and not '+' in last_played_iso:
+            last_played_iso += 'Z'
 
         return {
             'id': self.id,
@@ -149,7 +152,8 @@ class Video(BaseModel):
             'duration': self.duration,
             'url': url,
             'created_at': self.created_at.isoformat(),
-            'size_mb': round(self.file_size / (1024*1024), 1)
+            'size_mb': round(self.file_size / (1024*1024), 1),
+            'last_played_at': last_played_iso
         }
 
 
@@ -173,11 +177,14 @@ class NewsPost(BaseModel):
     created_at = DateTimeField(default=datetime.now)
 
     def to_dict(self):
+        iso_date = self.created_at.isoformat()
+        if not iso_date.endswith('Z'):
+            iso_date += 'Z'
         return {
             'id': self.id,
             'author': self.author.username,
             'content': self.content,
-            'created_at': self.created_at.strftime("%Y-%m-%d %H:%M")
+            'created_at': iso_date
         }
 
 

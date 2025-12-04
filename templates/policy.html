@@ -2,109 +2,183 @@
 {% extends 'base.html' %}
 
 {% block content %}
-<div class="policy-container" style="max-width: 800px; margin: 0 auto; padding: 20px; background: var(--bg-card); border-radius: 12px; box-shadow: 0 4px 12px var(--shadow-color);">
+<div class="dashboard-container" style="max-width: 900px; margin: 0 auto;">
 
-    <div style="text-align: center; margin-bottom: 30px; border-bottom: 2px solid var(--border-color); padding-bottom: 20px;">
-        <h1 style="margin: 0;">Политика и Условия</h1>
+    <!-- Заголовок -->
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h1 style="margin: 0;">Справка и Условия</h1>
         <p style="color: var(--text-muted);">Watch Party Service</p>
         <div style="background: var(--bg-hover); display: inline-block; padding: 5px 15px; border-radius: 20px; margin-top: 10px; font-weight: bold; font-size: 14px; border: 1px solid var(--primary-color);">
-            🚀 Версия: 1.0.0-beta (от 02.12.2025)
+            🚀 Версия: 1.0.2-beta (от 04.12.2025)
         </div>
     </div>
 
-    <section style="margin-bottom: 30px;">
-        <h2>1. О Сервисе (Beta)</h2>
-        <p>
-            Сервис "Watch Party" находится в стадии <b>открытого бета-тестирования</b>.
-            Программное обеспечение предоставляется "как есть" (AS IS), без каких-либо гарантий работоспособности,
-            сохранности данных или доступности в режиме 24/7.
-        </p>
-        <p>Администрация оставляет за собой право в любой момент:</p>
-        <ul>
-            <li>Удалить аккаунт или комнату без объяснения причин.</li>
-            <li>Изменить квоты и лимиты.</li>
-            <li>Сбросить базу данных в случае критических обновлений.</li>
-        </ul>
-    </section>
+    <!-- Навигация (Табы) -->
+    <nav class="nav-tabs" style="justify-content: center; margin-bottom: 30px;">
+        <button class="tab-btn active" onclick="openPolicyTab('terms')">📜 Условия и Лимиты</button>
+        <button class="tab-btn" onclick="openPolicyTab('guide')">📘 Как пользоваться</button>
+    </nav>
 
-    <section style="margin-bottom: 30px;">
-        <h2>2. Обработка и хранение данных</h2>
-        <p>Мы собираем минимально необходимый набор данных для функционирования сервиса:</p>
-        <ul>
-            <li><b>Учетные данные:</b> Логин и хэш пароля (хранится с использованием алгоритма pbkdf2).</li>
-            <li><b>Связь с Telegram:</b> Ваш Telegram ID и username (если привязано) для восстановления доступа.</li>
-            <li><b>Медиа-контент:</b> Видеофайлы и изображения (аватары), загруженные вами.</li>
-            <li><b>Сетевые данные:</b> IP-адреса (в логах сервера для защиты от DoS-атак).</li>
-        </ul>
-        <div style="background: rgba(220, 53, 69, 0.1); border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0;">
-            <h3 style="margin-top: 0; color: #dc3545;">⚠️ Важное предупреждение о безопасности</h3>
-            <p>
-                <b>Данные на сервере НЕ ШИФРУЮТСЯ.</b> <br>
-                Загруженные вами файлы хранятся в открытом виде на диске или в S3-хранилище.
-                База данных также не использует сквозное шифрование.
-            </p>
-            <p style="font-weight: bold;">
-                ЗАПРЕЩЕНО использовать сервис для передачи или хранения:
-            </p>
-            <ul style="margin-bottom: 0;">
-                <li>Конфиденциальных документов (паспорта, договора).</li>
-                <li>Приватных фото/видео материалов чувствительного характера.</li>
-                <li>Паролей, ключей доступа и финансовой информации.</li>
+    <!-- Вклдака 1: Политика и Лимиты -->
+    <div id="tab-terms" class="policy-tab-content active">
+        <div class="policy-card">
+            <section>
+                <h2>1. О Сервисе (Beta)</h2>
+                <p>
+                    Сервис "Watch Party" находится в стадии <b>открытого бета-тестирования</b>.
+                    Программное обеспечение предоставляется "как есть" (AS IS). Администрация оставляет за собой право:
+                </p>
+                <ul>
+                    <li>Удалять контент и комнаты без предупреждения.</li>
+                    <li>Изменять квоты и функционал.</li>
+                    <li>Сбрасывать базу данных при критических обновлениях.</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2>2. Безопасность данных</h2>
+                <div style="background: rgba(220, 53, 69, 0.1); border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0;">
+                    <h3 style="margin-top: 0; color: #dc3545;">⚠️ Внимание</h3>
+                    <p>
+                        <b>Данные на сервере хранятся в открытом виде.</b><br>
+                        Не загружайте личные документы, приватные фото/видео и пароли.
+                        Мы используем технические файлы cookie только для авторизации.
+                    </p>
+                </div>
+            </section>
+
+            <section>
+                <h2>3. Технические Лимиты</h2>
+                <p>Для стабильности работы действуют следующие ограничения:</p>
+
+                <table class="data-table" style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                    <thead>
+                        <tr style="background: var(--bg-hover);">
+                            <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Параметр</th>
+                            <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Значение</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Лимит комнат на аккаунт</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOMS_COUNT }}</b> шт.</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. видео в комнате</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_VIDEOS }}</b> шт.</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. размер файла</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_VIDEO_SIZE_MB }}</b> МБ</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Хранилище на комнату</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_STORAGE_MB }}</b> МБ</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Время жизни файла (без просмотров)</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_VIDEO_RETENTION_HOURS }}</b> часа</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);">Вкладок одной комнаты (на юзера)</td>
+                            <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_DUPLICATION }}</b> шт.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+        </div>
+    </div>
+
+    <!-- Вкладка 2: Гайд пользователя -->
+    <div id="tab-guide" class="policy-tab-content" style="display: none;">
+
+        <!-- Секция: Профиль -->
+        <div class="policy-card">
+            <h2>👤 Профиль и Доступ</h2>
+            <p>Чтобы полноценно пользоваться сервисом, необходимо пройти верификацию:</p>
+            <ol>
+                <li>Зарегистрируйтесь на сайте.</li>
+                <li>Перейдите во вкладку <b>Профиль</b>.</li>
+                <li>Нажмите <b>"Привязать Telegram"</b> и перейдите в бота.</li>
+                <li>Нажмите <code>Старт</code> в боте. Ваш аккаунт получит статус <i>Verified</i>.</li>
+                <li>После проверки администратором вы получите доступ к созданию комнат.</li>
+            </ol>
+            <p>В профиле вы также можете установить аватарку и посмотреть свою статистику просмотров.</p>
+        </div>
+
+        <!-- Секция: Комнаты -->
+        <div class="policy-card">
+            <h2>🏠 Комнаты</h2>
+            <p>Вы можете создавать собственные кинозалы во вкладке <b>Комнаты</b>.</p>
+
+            <h3>Настройки комнаты</h3>
+            <ul>
+                <li><b>Название и Цвет:</b> Для персонализации.</li>
+                <li><b>Закрытая комната (Private):</b> В такую комнату нельзя попасть по прямой ссылке. Гость увидит экран "Постучаться". Владелец получит уведомление и сможет пустить или отклонить гостя.</li>
+                <li><b>Управление гостями:</b> Если галочка включена, любой зритель может ставить паузу, перематывать и переключать видео. Если выключена — управляет только Владелец.</li>
             </ul>
         </div>
-    </section>
 
-    <section style="margin-bottom: 30px;">
-        <h2>3. Лимиты и Ограничения</h2>
-        <p>Для обеспечения стабильности работы всех пользователей действуют следующие квоты:</p>
+        <!-- Секция: Видео -->
+        <div class="policy-card">
+            <h2>🎬 Видео и Плеер</h2>
+            <p>Сервис поддерживает загрузку файлов <code>.mp4</code>, <code>.mkv</code>, <code>.avi</code>, <code>.mov</code>.</p>
 
-        <table class="data-table" style="width: 100%; border-collapse: collapse; margin-top: 10px;">
-            <thead>
-                <tr style="background: var(--bg-hover);">
-                    <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Параметр</th>
-                    <th style="padding: 10px; text-align: left; border: 1px solid var(--border-color);">Значение</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);">Максимум комнат на аккаунт</td>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOMS_COUNT }}</b> шт.</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. видео в одной комнате</td>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_VIDEOS }}</b> шт.</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);">Макс. размер одного файла</td>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_VIDEO_SIZE_MB }}</b> МБ</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);">Лимит хранилища на комнату</td>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_ROOM_STORAGE_MB }}</b> МБ</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);">Одновременно открытых комнат</td>
-                    <td style="padding: 10px; border: 1px solid var(--border-color);"><b>{{ config.MAX_OPENED_ROOMS }}</b></td>
-                </tr>
-            </tbody>
-        </table>
+            <h3>Синхронизация</h3>
+            <p>
+                Плеер синхронизируется автоматически.
+                <br>🟢 <b>Зеленый статус:</b> Вы смотрите синхронно с сервером.
+                <br>🔴 <b>Красный статус:</b> Вы отстали, плеер скоро сам вас перемотает.
+            </p>
+            <p><i>Если Владелец в сети — он задает время для всех. Если владельца нет — время согласовывается между стабильными зрителями.</i></p>
 
-        <div style="margin-top: 15px; font-size: 14px; color: var(--text-muted);">
-            <p><b>♻️ Автоочистка:</b> В целях экономии места, видеофайлы, которые не воспроизводились <b>более 2х часов</b>, удаляются автоматически.</p>
+            <h3>Автоудаление</h3>
+            <p>
+                Мы не храним файлы вечно. У каждого видео есть таймер жизни (см. Лимиты).
+                Таймер сбрасывается каждый раз, когда кто-то нажимает <b>Play</b>.
+                Если видео никто не смотрит указанное время — оно удаляется безвозвратно.
+            </p>
         </div>
-    </section>
 
-    <section style="margin-bottom: 30px;">
-        <h2>4. Cookie файлы</h2>
-        <p>
-            Сервис использует технические файлы cookie (session_id) исключительно для поддержания авторизации пользователя.
-            Мы не используем трекеры, рекламные пиксели или аналитику третьих сторон.
-        </p>
-    </section>
+    </div>
 
-    <div style="text-align: center; margin-top: 40px;">
+    <div style="text-align: center; margin-top: 40px; margin-bottom: 40px;">
         <button class="btn btn-primary" onclick="window.history.back()" style="width: auto; padding: 10px 30px;">Вернуться назад</button>
     </div>
 
 </div>
+
+<style>
+    .policy-card {
+        background: var(--bg-card);
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px var(--shadow-color);
+        margin-bottom: 20px;
+    }
+    .policy-card h2 { margin-top: 0; color: var(--primary-color); border-bottom: 1px solid var(--border-color); padding-bottom: 10px;}
+    .policy-card h3 { font-size: 1.1em; color: var(--text-main); margin-top: 20px; }
+    .policy-card ul, .policy-card ol { line-height: 1.6; color: var(--text-muted); }
+    .policy-card p { color: var(--text-main); line-height: 1.5; }
+</style>
+
+<script>
+    function openPolicyTab(tabName) {
+        // Скрываем все
+        document.querySelectorAll('.policy-tab-content').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+        // Показываем нужный
+        document.getElementById(`tab-${tabName}`).style.display = 'block';
+
+        // Подсвечиваем кнопку (ищем по тексту onclick, так проще без ID)
+        const btn = document.querySelector(`button[onclick="openPolicyTab('${tabName}')"]`);
+        if(btn) btn.classList.add('active');
+    }
+</script>
+{% endblock %}
+
+{% block scripts %}
+<!-- Используем стили дашборда для табов и кнопок -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 {% endblock %}
