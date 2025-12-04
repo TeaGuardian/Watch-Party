@@ -135,6 +135,24 @@
     </div>
 </div>
 
+<div id="edit-news-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+        <h3>Редактировать новость</h3>
+        <div class="input-container">
+            <textarea id="edit-news-content" class="input-field" rows="6" placeholder=" "></textarea>
+            <label class="input-label">Markdown текст</label>
+        </div>
+        <!-- Скрытое поле для ID -->
+        <input type="hidden" id="edit-news-id">
+
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeEditNewsModal()">Отмена</button>
+            <button class="btn btn-primary" onclick="saveEditedNews()">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+
 <div id="cropper-modal" class="modal-overlay" style="display: none;">
     <div class="modal-card">
         <h3>Редактирование фото</h3>

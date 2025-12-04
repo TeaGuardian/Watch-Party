@@ -294,6 +294,8 @@ async function deleteAvatar() {
 
 // --- News Section ---
 
+let allNewsCache = [];
+
 async function loadNews() {
     const container = document.getElementById('news-container');
     try {
@@ -304,31 +306,33 @@ async function loadNews() {
             container.innerHTML = '<p style="text-align:center;color:#999">Новостей пока нет</p>';
             return;
         }
+        allNewsCache = data.news;
 
-        // [NEW] Используем marked.js и DOMPurify
         container.innerHTML = data.news.map(post => {
-            // Парсим Markdown в HTML
-            const rawHtml = marked.parse(post.content);
-            // Очищаем от скриптов (XSS защита)
-            const safeHtml = DOMPurify.sanitize(rawHtml);
+            const isAuthor = currentUser && (currentUser.username === post.author || currentUser.role === 'admin');
+
+            const editBtn = isAuthor
+                ? `<button class="btn-text-edit" onclick="openEditNewsModal(${post.id})" title="Редактировать">✏️</button>`
+                : '';
 
             return `
             <div class="news-post">
-                <div class="news-meta">
-                    <strong>${post.author}</strong> • ${post.created_at}
+                <div class="news-meta" style="display:flex; justify-content:space-between; align-items:center;">
+                    <span><strong>${post.author}</strong> • ${post.created_at}</span>
+                    ${editBtn}
                 </div>
-                <div class="news-content markdown-body">
-                    ${safeHtml}
+                <div class="news-content">
+                    ${simpleMarkdown(post.content)}
                 </div>
             </div>
-            `;
-        }).join('');
+        `}).join('');
 
     } catch (e) {
-        console.error(e);
         container.innerHTML = '<p>Ошибка загрузки новостей</p>';
+        console.error(e);
     }
 }
+
 
 // Простой парсер Markdown
 function simpleMarkdown(text) {
@@ -339,6 +343,47 @@ function simpleMarkdown(text) {
         .replace(/^# (.*$)/gim, '<h3>$1</h3>') // Header
         .replace(/\n/g, '<br>'); // New lines
     return html;
+}
+
+function openEditNewsModal(postId) {
+    // Ищем пост в кеше
+    const post = allNewsCache.find(p => p.id === postId);
+    if (!post) return;
+
+    document.getElementById('edit-news-id').value = post.id;
+    document.getElementById('edit-news-content').value = post.content; // Исходный markdown
+
+    document.getElementById('edit-news-modal').style.display = 'flex';
+}
+
+function closeEditNewsModal() {
+    document.getElementById('edit-news-modal').style.display = 'none';
+}
+
+async function saveEditedNews() {
+    const postId = document.getElementById('edit-news-id').value;
+    const content = document.getElementById('edit-news-content').value;
+
+    if (!content) return showError('Текст не может быть пустым');
+
+    try {
+        const res = await fetch(`/api/news/${postId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ content })
+        });
+
+        if (res.ok) {
+            showSuccess('Новость обновлена');
+            closeEditNewsModal();
+            loadNews(); // Перезагружаем список
+        } else {
+            const d = await res.json();
+            showError(d.error || 'Ошибка сохранения');
+        }
+    } catch(e) {
+        showError('Ошибка сети');
+    }
 }
 
 async function createNewsPost() {

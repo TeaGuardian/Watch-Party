@@ -307,6 +307,32 @@ def create_news(current_user):
     return jsonify({'success': True})
 
 
+@api.route('/news/<int:post_id>', methods=['PUT'])
+@login_required
+def update_news(current_user, post_id):
+    """Редактирование новости"""
+    try:
+        post = NewsPost.get_by_id(post_id)
+
+        # Разрешаем редактирование только автору или админу
+        if post.author != current_user and current_user.role != 'admin':
+            return jsonify({'error': 'Access denied'}), 403
+
+        data = request.json
+        content = data.get('content', '').strip()
+
+        if not content:
+            return jsonify({'error': 'Content cannot be empty'}), 400
+
+        post.content = content
+        post.save()
+
+        return jsonify({'success': True})
+
+    except NewsPost.DoesNotExist:
+        return jsonify({'error': 'Post not found'}), 404
+
+
 # --- КОМНАТЫ ---
 
 
@@ -462,7 +488,7 @@ def get_room_details(current_user, room_uuid):
         })
 
     except Room.DoesNotExist:
-        redirect("/", 404)
+        return redirect("/", 404)
 
 
 @api.route('/rooms/<uuid:room_uuid>', methods=['DELETE'])

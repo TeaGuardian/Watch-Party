@@ -723,7 +723,7 @@ async function renameVideo(e, id, oldTitle) {
 function changeVideo(videoId) {
     console.log("Clicked video ID:", videoId);
 
-    if (!isOwner) {
+    if (!isOwner && !isAllowedGuestControl) {
         console.warn("You are not the owner, cannot change video.");
         return;
     }
@@ -815,7 +815,87 @@ function formatDuration(sec) {
     return `${m}:${s < 10 ? '0'+s : s}`;
 }
 
-function copyLink() {
-    navigator.clipboard.writeText(window.location.href);
-    alert('Ссылка скопирована!');
+async function copyLink() {
+    const url = window.location.href;
+
+    try {
+        // Пробуем современный API
+        await navigator.clipboard.writeText(url);
+        showNotification('Ссылка скопирована в буфер обмена!', 'success');
+    } catch (err) {
+        // Fallback для старых браузеров или HTTP
+        try {
+            const textArea = document.createElement('textarea');
+            textArea.value = url;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+
+            const successful = document.execCommand('copy');
+            document.body.removeChild(textArea);
+
+            if (successful) {
+                showNotification('Ссылка скопирована!', 'success');
+            } else {
+                throw new Error('Не удалось скопировать');
+            }
+        } catch (fallbackErr) {
+            // Последний вариант - показать ссылку для ручного копирования
+            prompt('Скопируйте ссылку вручную:', url);
+            showNotification('Ссылка готова для копирования', 'info');
+        }
+    }
+}
+
+function showNotification(message, type = 'info') {
+    // Удаляем старое уведомление если есть
+    const oldNotification = document.querySelector('.copy-notification');
+    if (oldNotification) {
+        oldNotification.remove();
+    }
+
+    // Создаем новое уведомление
+    const notification = document.createElement('div');
+    notification.className = `copy-notification notification-${type}`;
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 24px;
+        background: ${type === 'success' ? '#4CAF50' : '#2196F3'};
+        color: white;
+        border-radius: 4px;
+        z-index: 10000;
+        font-family: sans-serif;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        animation: fadeInOut 3s ease-in-out;
+    `;
+
+    // Добавляем стили для анимации
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes fadeInOut {
+            0% { opacity: 0; transform: translateY(-10px); }
+            10% { opacity: 1; transform: translateY(0); }
+            90% { opacity: 1; transform: translateY(0); }
+            100% { opacity: 0; transform: translateY(-10px); }
+        }
+    `;
+    document.head.appendChild(style);
+
+    document.body.appendChild(notification);
+
+    // Автоматически удаляем через 3 секунды
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.remove();
+        }
+        if (style.parentNode) {
+            style.remove();
+        }
+    }, 3000);
 }

@@ -81,14 +81,14 @@
             </label>
         </div>
 
-        <div class="input-container captcha-container">
-            <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
-                <img id="captcha-img-reg" src="/api/captcha"
-                     style="border-radius: 8px; height: 50px; cursor: pointer;"
-                     onclick="refreshCaptcha()" title="Нажмите, чтобы обновить">
-                <button type="button" class="btn-secondary" style="width: 40px; margin:0; padding:0; height:50px;" onclick="refreshCaptcha()">↻</button>
-            </div>
 
+        <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+            <img id="captcha-img-reg" src="/api/captcha"
+                 style="border-radius: 8px; height: 50px; cursor: pointer;"
+                 onclick="refreshCaptcha()" title="Нажмите, чтобы обновить">
+            <button type="button" class="btn-secondary" style="width: 40px; margin:0; padding:0; height:50px;" onclick="refreshCaptcha()">↻</button>
+        </div>
+        <div class="input-container captcha-container">
             <input type="text" id="reg-captcha" class="input-field" placeholder=" " required autocomplete="off">
             <label class="input-label">Код с картинки</label>
         </div>

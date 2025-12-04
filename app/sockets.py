@@ -2,6 +2,7 @@
 import os
 import sys
 from datetime import datetime
+from functools import wraps
 
 from flask import session, request
 from flask_socketio import emit, join_room, leave_room
@@ -13,6 +14,24 @@ from core.models import User, Room, Video, db, RoomAccess, RoomBan
 ROOM_STATE = {}
 ACTIVE_CONNECTIONS = {}
 SID_MAP = {}
+
+
+def db_session(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        # Если соединение закрыто - открываем (берем из пула)
+        if db.is_closed():
+            db.connect()
+        try:
+            return f(*args, **kwargs)
+        except Exception as e:
+            print(f"Socket DB Error in {f.__name__}: {e}")
+            raise e
+        finally:
+            # Всегда возвращаем соединение в пул после обработки события!
+            if not db.is_closed():
+                db.close()
+    return wrapper
 
 
 def track_connection_add(user_id, room_uuid, sid):
@@ -63,13 +82,11 @@ def get_current_user():
     user_id = session.get('user_id')
     if not user_id:
         return None
-    # Важно: открываем соединение, если закрыто (так как сокеты могут долго висеть)
-    if db.is_closed():
-        db.connect()
     return User.get_or_none(User.id == user_id)
 
 
 @socketio.on('connect')
+@db_session
 def on_connect():
     user = get_current_user()
     if user:
@@ -82,6 +99,7 @@ def on_disconnect():
 
 
 @socketio.on('join')
+@db_session
 def on_join(data):
     """Вход пользователя"""
     room_uuid = data.get('room_uuid')
@@ -147,6 +165,7 @@ def on_join(data):
 
 
 @socketio.on('leave')
+@db_session
 def on_leave(data):
     room_uuid = data.get('room_uuid')
     user = get_current_user()
@@ -160,6 +179,7 @@ def on_leave(data):
 
 
 @socketio.on('sync_action')
+@db_session
 def on_sync_action(data):
     """Play/Pause/Seek"""
     user = get_current_user()
@@ -204,6 +224,7 @@ def on_sync_action(data):
 
 
 @socketio.on('heartbeat')
+@db_session
 def on_heartbeat(data):
     user = get_current_user()
     room_uuid = data.get('room_uuid')
@@ -232,6 +253,7 @@ def on_heartbeat(data):
 
 
 @socketio.on('chat_message')
+@db_session
 def on_chat_message(data):
     """Простой чат"""
     user = get_current_user()
@@ -251,6 +273,7 @@ def on_chat_message(data):
 
 
 @socketio.on('change_video')
+@db_session
 def on_change_video(data):
     """Смена видео"""
     user = get_current_user()
@@ -261,7 +284,7 @@ def on_change_video(data):
 
     try:
         room = Room.get(Room.uuid == room_uuid)
-        if room.owner_id != user.id and not (room.is_private and room.allow_guest_control):
+        if room.owner_id != user.id and not room.allow_guest_control:
             return
 
         video = Video.get_by_id(video_id)
@@ -291,6 +314,7 @@ def on_change_video(data):
 
 
 @socketio.on('knock_knock')
+@db_session
 def on_knock(data):
     """Гость просит впустить его"""
     room_uuid = data.get('room_uuid')
@@ -317,6 +341,7 @@ def on_knock(data):
 
 
 @socketio.on('decide_knock')
+@db_session
 def on_decide_knock(data):
     """Владелец принял решение"""
     owner = get_current_user()

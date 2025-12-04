@@ -1,5 +1,7 @@
 #/main.py
 import os
+import eventlet
+eventlet.monkey_patch()
 from app import create_app, socketio
 from core.models import create_tables, User
 
