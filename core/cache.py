@@ -10,6 +10,7 @@ from config import RedisConfig
 # decode_responses=True позволяет получать строки, а не байты
 cache_client = redis.Redis.from_url(RedisConfig.URL, decode_responses=True)
 
+
 def get_cache(key: str):
     try:
         return cache_client.get(key)
@@ -17,8 +18,16 @@ def get_cache(key: str):
         print(f"Redis get error: {e}")
         return None
 
-def set_cache(key: str, value: str, ttl: int = 3600):
+
+def set_cache(key: str, value: str, ttl: int = 60 * 20):
     try:
         cache_client.setex(key, ttl, value)
     except Exception as e:
         print(f"Redis set error: {e}")
+
+
+def delete_cache(key: str):
+    try:
+        cache_client.delete(key)
+    except Exception as e:
+        print(f"Redis delete error: {e}")

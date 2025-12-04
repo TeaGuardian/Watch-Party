@@ -455,3 +455,29 @@
     color: var(--primary-color);
     margin-left: 5px;
 }
+
+/* Специфичные стили для модалки редактирования новостей */
+#edit-news-modal .modal-card {
+    max-width: 900px; /* Делаем широким */
+    width: 95%;
+    height: 80vh; /* Высота 80% от экрана */
+    display: flex;
+    flex-direction: column;
+}
+
+#edit-news-modal .input-container {
+    flex: 1; /* Редактор займет все свободное место */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Чтобы скролл был внутри редактора */
+}
+
+/* Поправка для EasyMDE внутри модалки, чтобы он растягивался */
+#edit-news-modal .EasyMDEContainer {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+#edit-news-modal .CodeMirror {
+    flex: 1;
+}

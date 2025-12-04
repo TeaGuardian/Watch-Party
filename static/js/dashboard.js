@@ -323,14 +323,18 @@ async function loadNews() {
                 ? `<button class="btn-text-edit" onclick="openEditNewsModal(${post.id})" title="Редактировать">✏️</button>`
                 : '';
 
+            const rawHtml = marked.parse(post.content);
+            const safeHtml = DOMPurify.sanitize(rawHtml);
+
             return `
             <div class="news-post">
                 <div class="news-meta" style="display:flex; justify-content:space-between; align-items:center;">
                     <span><strong>${post.author}</strong> • ${post.created_at}</span>
                     ${editBtn}
                 </div>
-                <div class="news-content">
-                    ${simpleMarkdown(post.content)}
+                <!-- Добавляем класс markdown-body для красивых отступов списков и цитат -->
+                <div class="news-content markdown-body">
+                    ${safeHtml}
                 </div>
             </div>
         `}).join('');
@@ -353,15 +357,42 @@ function simpleMarkdown(text) {
     return html;
 }
 
+let editEasyMDE = null; // Глобальная переменная для инстанса редактора редактирования
+
 function openEditNewsModal(postId) {
     // Ищем пост в кеше
     const post = allNewsCache.find(p => p.id === postId);
     if (!post) return;
 
     document.getElementById('edit-news-id').value = post.id;
-    document.getElementById('edit-news-content').value = post.content; // Исходный markdown
 
-    document.getElementById('edit-news-modal').style.display = 'flex';
+    const modal = document.getElementById('edit-news-modal');
+    modal.style.display = 'flex';
+
+    // Инициализируем редактор ТОЛЬКО один раз при первом открытии
+    if (!editEasyMDE) {
+        editEasyMDE = new EasyMDE({
+            element: document.getElementById('edit-news-content'),
+            spellChecker: false,
+            status: false,
+            toolbar: [
+                "bold", "italic", "heading", "|",
+                "quote", "unordered-list", "ordered-list", "|",
+                "link", "image", "|",
+                "preview", "side-by-side", "fullscreen", "guide"
+            ],
+            minHeight: "300px", // Минимальная высота
+        });
+    }
+
+    // Устанавливаем текст новости в редактор
+    editEasyMDE.value(post.content);
+
+    // ВАЖНО: CodeMirror (движок редактора) некорректно рендерится, если инициализирован в скрытом блоке.
+    // Нам нужно принудительно обновить его после того, как модалка стала display: flex.
+    setTimeout(() => {
+        editEasyMDE.codemirror.refresh();
+    }, 200);
 }
 
 function closeEditNewsModal() {
@@ -370,9 +401,17 @@ function closeEditNewsModal() {
 
 async function saveEditedNews() {
     const postId = document.getElementById('edit-news-id').value;
-    const content = document.getElementById('edit-news-content').value;
 
-    if (!content) return showError('Текст не может быть пустым');
+    // [FIX] Берем значение из EasyMDE, а не из textarea
+    let content = '';
+    if (editEasyMDE) {
+        content = editEasyMDE.value();
+    } else {
+        // Фоллбек, если вдруг редактор не загрузился
+        content = document.getElementById('edit-news-content').value;
+    }
+
+    if (!content.trim()) return showError('Текст не может быть пустым');
 
     try {
         const res = await fetch(`/api/news/${postId}`, {

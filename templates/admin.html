@@ -27,16 +27,25 @@
                     <p id="stat-users">-</p>
                 </div>
                 <div class="stat-card warning">
-                    <h3>Ждут подтверждения</h3>
+                    <h3>Ждут аппрува</h3>
                     <p id="stat-new">-</p>
                 </div>
                 <div class="stat-card">
-                    <h3>Комнат</h3>
+                    <h3>Всего комнат</h3>
                     <p id="stat-rooms">-</p>
                 </div>
                 <div class="stat-card">
-                    <h3>Видео</h3>
+                    <h3>Видео файлов</h3>
                     <p id="stat-videos">-</p>
+                </div>
+                <!-- Новые карточки -->
+                <div class="stat-card success">
+                    <h3>Насмотрено (Часов)</h3>
+                    <p id="stat-hours">-</p>
+                </div>
+                <div class="stat-card info">
+                    <h3>Занято места (GB)</h3>
+                    <p id="stat-storage">-</p>
                 </div>
             </div>
         </div>
@@ -47,14 +56,15 @@
                 <h2>Управление пользователями</h2>
                 <button class="btn btn-sm btn-secondary" onclick="loadUsers()">Обновить</button>
             </div>
-            
+
             <div class="table-container">
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>ID</th>
-                            <th>Логин</th>
+                            <th>Пользователь</th>
                             <th>TG</th>
+                            <th>Часов</th>
                             <th>Роль</th>
                             <th>Статус</th>
                             <th>Действия</th>
@@ -69,9 +79,65 @@
 
     </main>
 </div>
+
+<!-- МОДАЛКА ДЕТАЛЕЙ ЮЗЕРА -->
+<div id="user-details-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card admin-modal">
+        <div class="modal-header">
+            <h3 id="modal-username">User Details</h3>
+            <button class="btn-close" onclick="closeUserModal()">×</button>
+        </div>
+
+        <div class="modal-body">
+            <!-- Верхняя часть: Инфо -->
+            <div class="user-info-grid">
+                <div class="info-block">
+                    <img id="modal-avatar" src="" class="admin-avatar-lg">
+                    <div class="status-tags" id="modal-status-tags">
+                        <!-- Badges JS -->
+                    </div>
+                </div>
+                <div class="info-details">
+                    <p><strong>Telegram:</strong> <span id="modal-tg"></span></p>
+                    <p><strong>Комнат:</strong> <span id="modal-rooms-count"></span></p>
+                    <p><strong>Видео:</strong> <span id="modal-videos-count"></span></p>
+                    <p><strong>Кем одобрен:</strong> <span id="modal-approved-by"></span></p>
+                </div>
+            </div>
+
+            <!-- График -->
+            <div class="admin-chart-container">
+                <h4>Активность (30 дней)</h4>
+                <div class="chart-wrapper">
+                    <div id="admin-chart-bars" class="chart-bars">
+                        <!-- Bars JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Управление -->
+            <div class="admin-controls-area">
+                <div class="control-group">
+                    <label>Роль:</label>
+                    <select id="modal-role-select" class="input-select">
+                        <option value="user">User</option>
+                        <option value="moderator">Moderator</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                    <button class="btn btn-sm btn-primary" onclick="saveUserRole()">Сохранить роль</button>
+                </div>
+
+                <div class="control-buttons" id="modal-action-buttons">
+                    <!-- Buttons JS (Ban/Approve/Delete) -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}"> <!-- Для стилей графика -->
 <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
 {% endblock %}

@@ -1,4 +1,4 @@
-#/app/routes.py
+# /app/routes.py
 import hashlib
 import json
 import re
@@ -6,6 +6,7 @@ import secrets
 import string
 import time
 import random
+from datetime import datetime, timedelta  # [NEW] Нужно для графиков
 
 from captcha.image import ImageCaptcha
 from flask import Blueprint, request, jsonify, session, redirect, send_file, send_from_directory
@@ -17,6 +18,7 @@ from peewee import fn
 from core.storage import storage
 from . import socketio
 from .decorators import login_required, admin_required
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchStat
 from core.cache import get_cache, set_cache
@@ -414,14 +416,14 @@ def get_rooms(current_user):
     banned_ids = RoomBan.select(RoomBan.room_id).where(RoomBan.user == current_user)
 
     guest_rooms = (Room
-                    .select(Room, User)
-                    .join(User)
-                    .switch(Room)
-                    .join(RoomAccess)
-                    .where(
-                        (RoomAccess.user == current_user) &
-                        (Room.id.not_in(banned_ids))
-                    ))
+    .select(Room, User)
+    .join(User)
+    .switch(Room)
+    .join(RoomAccess)
+    .where(
+        (RoomAccess.user == current_user) &
+        (Room.id.not_in(banned_ids))
+    ))
 
     for r in guest_rooms:
         data = r.to_dict()
@@ -464,9 +466,9 @@ def create_room(current_user):
     current_count = Room.select().where(Room.owner == current_user).count()
     if current_count >= AppConfig.MAX_ROOMS_COUNT:
         return jsonify({
-                'error': f'Достигнут лимит комнат ({AppConfig.MAX_ROOMS_COUNT})',
-                'code': 'limit_reached'
-            }), 400
+            'error': f'Достигнут лимит комнат ({AppConfig.MAX_ROOMS_COUNT})',
+            'code': 'limit_reached'
+        }), 400
 
     data = request.json or {}
     name = data.get('name')
@@ -487,7 +489,7 @@ def create_room(current_user):
             is_private=is_private,
             header_color=header_color,
             allow_guest_control=allow_guest_control,
-            has_voice_chat = voice_chat_enabled
+            has_voice_chat=voice_chat_enabled
         )
         return jsonify({'success': True, 'uuid': str(room.uuid)})
 
@@ -796,11 +798,13 @@ def delete_video(current_user, video_id):
         room_uuid = video.room.uuid
         room_uuid_str = str(room_uuid)
         file_hash = video.file_hash
-        from app.sockets import ROOM_STATE
 
+        # --- [NEW] Проверка: Играет ли это видео сейчас? ---
+        from app.sockets import ROOM_STATE
         if room_uuid_str in ROOM_STATE:
             current_state = ROOM_STATE[room_uuid_str]
             if current_state.get('video_id') == video.id:
+                # Сбрасываем стейт
                 ROOM_STATE[room_uuid_str]['video_id'] = None
                 ROOM_STATE[room_uuid_str]['timestamp'] = 0
                 ROOM_STATE[room_uuid_str]['paused'] = True
@@ -850,21 +854,39 @@ def rename_video(current_user, video_id):
         return jsonify({'error': 'Not found'}), 404
 
 
-
 # --- ADMIN PANEL ---
-
 
 @api.route('/admin/stats', methods=['GET'])
 @login_required
 @admin_required
 def get_admin_stats(current_user):
-    """Статистика для дашборда"""
+    """Статистика для дашборда (Кэш 5 минут)"""
+    cache_key = "admin_global_stats"
+
+    # 1. Проверяем кэш
+    cached_data = get_cache(cache_key)
+    if cached_data:
+        return jsonify(json.loads(cached_data))
+
+    # 2. Считаем (Тяжелые операции)
+    total_seconds = DailyWatchStat.select(fn.SUM(DailyWatchStat.total_seconds)).scalar() or 0
+    total_hours = round(total_seconds / 3600, 1)
+
+    total_storage_bytes = Video.select(fn.SUM(Video.file_size)).scalar() or 0
+    total_storage_gb = round(total_storage_bytes / (1024 ** 3), 2)
+
     stats = {
         'users_total': User.select().count(),
-        'users_new': User.select().where(User.status == 'tg_verified').count(),
+        'users_new': User.select().where(User.status.in_(['new', 'tg_verified'])).count(),
         'rooms_total': Room.select().count(),
         'videos_total': Video.select().count(),
+        'total_watch_hours': total_hours,
+        'storage_used_gb': total_storage_gb
     }
+
+    # 3. Сохраняем в кэш на 300 сек (5 мин)
+    set_cache(cache_key, json.dumps(stats), ttl=300)
+
     return jsonify(stats)
 
 
@@ -872,9 +894,82 @@ def get_admin_stats(current_user):
 @login_required
 @admin_required
 def get_all_users(current_user):
-    """Список пользователей"""
+    """Список пользователей (Кэш 5 минут)"""
+    cache_key = "admin_users_list"
+
+    # 1. Проверяем кэш
+    cached_data = get_cache(cache_key)
+    if cached_data:
+        return jsonify(json.loads(cached_data))
+
+    # 2. Выполняем запрос
     users = User.select().order_by(User.created_at.desc())
-    return jsonify({'users': [u.to_dict() for u in users]})
+
+    users_data = []
+    for u in users:
+        # Тяжелый подзапрос для каждого юзера
+        total_sec = DailyWatchStat.select(fn.SUM(DailyWatchStat.total_seconds)).where(
+            DailyWatchStat.user == u).scalar() or 0
+        total_hours = round(total_sec / 3600, 1)
+
+        d = u.to_dict()
+        d['total_hours'] = total_hours
+        users_data.append(d)
+
+    response = {'users': users_data}
+
+    # 3. Сохраняем
+    set_cache(cache_key, json.dumps(response), ttl=300)
+
+    return jsonify(response)
+
+
+@api.route('/admin/users/<int:user_id>/details', methods=['GET'])
+@login_required
+@admin_required
+def get_user_admin_details(current_user, user_id):
+    """Детальная инфа для модалки (Кэш 5 минут)"""
+    cache_key = f"admin_user_details_{user_id}"
+
+    cached_data = get_cache(cache_key)
+    if cached_data:
+        return jsonify(json.loads(cached_data))
+
+    try:
+        user = User.get_by_id(user_id)
+
+        rooms_count = Room.select().where(Room.owner == user).count()
+        videos_count = Video.select().join(Room).where(Room.owner == user).count()
+
+        today = datetime.now().date()
+        date_start = today - timedelta(days=29)
+
+        stats_query = DailyWatchStat.select().where(
+            (DailyWatchStat.user == user) &
+            (DailyWatchStat.date >= date_start)
+        ).order_by(DailyWatchStat.date.desc())
+
+        history = []
+        for s in stats_query:
+            history.append({
+                'date': s.date.isoformat(),
+                'seconds': s.total_seconds,
+                'hours': round(s.total_seconds / 3600, 1)
+            })
+
+        response = {
+            'user': user.to_dict(),
+            'rooms_count': rooms_count,
+            'videos_count': videos_count,
+            'history': history,
+            'approved_by': user.approved_by.username if user.approved_by else None
+        }
+
+        set_cache(cache_key, json.dumps(response), ttl=300)
+        return jsonify(response)
+
+    except User.DoesNotExist:
+        return jsonify({'error': 'User not found'}), 404
 
 
 @api.route('/admin/users/<int:user_id>/status', methods=['POST'])
@@ -889,13 +984,11 @@ def update_user_status(current_user, user_id):
     try:
         user = User.get_by_id(user_id)
 
-        # Защита: нельзя менять статус самому себе или супер-админу (защита от выстрела в ногу)
         if user.id == current_user.id:
             return jsonify({'error': 'Cannot change own status'}), 400
 
         if new_status:
             user.status = new_status
-            # Если аппрувим, записываем кто аппрувнул
             if new_status == 'approved':
                 user.approved_by = current_user
 
@@ -903,6 +996,15 @@ def update_user_status(current_user, user_id):
             user.role = new_role
 
         user.save()
+
+        # [NEW] Инвалидация кэша
+        # Удаляем общий список, так как статус юзера изменился
+        delete_cache("admin_users_list")
+        # Удаляем детальную инфу конкретного юзера
+        delete_cache(f"admin_user_details_{user_id}")
+        # Удаляем общую статистику (кол-во new users могло измениться)
+        delete_cache("admin_global_stats")
+
         return jsonify({'success': True})
     except User.DoesNotExist:
         return jsonify({'error': 'User not found'}), 404
@@ -921,6 +1023,12 @@ def delete_user_force(current_user, user_id):
         user_folder = f"users/{user.id}/"
         delete_storage_folder_task.delay(user_folder)
         user.delete_instance(recursive=True)
+
+        # [NEW] Инвалидация кэша
+        delete_cache("admin_users_list")
+        delete_cache(f"admin_user_details_{user_id}")
+        delete_cache("admin_global_stats")
+
         return jsonify({'success': True})
     except User.DoesNotExist:
         return jsonify({'error': 'User not found'}), 404
