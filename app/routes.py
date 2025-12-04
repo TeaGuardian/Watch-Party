@@ -794,9 +794,19 @@ def delete_video(current_user, video_id):
             return jsonify({'error': 'Access denied'}), 403
 
         room_uuid = video.room.uuid
+        room_uuid_str = str(room_uuid)
         file_hash = video.file_hash
+        from app.sockets import ROOM_STATE
 
-        # --- УМНОЕ УДАЛЕНИЕ ---
+        if room_uuid_str in ROOM_STATE:
+            current_state = ROOM_STATE[room_uuid_str]
+            if current_state.get('video_id') == video.id:
+                ROOM_STATE[room_uuid_str]['video_id'] = None
+                ROOM_STATE[room_uuid_str]['timestamp'] = 0
+                ROOM_STATE[room_uuid_str]['paused'] = True
+                socketio.emit('stop_playback', {}, to=room_uuid_str)
+
+        # --- УМНОЕ УДАЛЕНИЕ ФАЙЛОВ ---
         other_refs_count = Video.select().where(
             (Video.file_hash == file_hash) &
             (Video.id != video.id)
@@ -806,16 +816,11 @@ def delete_video(current_user, video_id):
             folder_to_delete = os.path.dirname(video.storage_path)
             if folder_to_delete:
                 if not folder_to_delete.endswith('/'): folder_to_delete += '/'
-
-                print(f"🗑️ Deleting last reference to physical files: {folder_to_delete}")
                 delete_storage_folder_task.delay(folder_to_delete)
-        else:
-            print(f"🛡️ Keep physical files. Used by {other_refs_count} other videos.")
 
-        # Удаляем запись из БД (в любом случае)
         video.delete_instance()
 
-        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+        socketio.emit('playlist_refresh', {}, to=room_uuid_str)
         return jsonify({'success': True})
 
     except Video.DoesNotExist:

@@ -411,8 +411,44 @@ function initSocket() {
 
     socket.on('playlist_refresh', () => {
         console.log("Playlist refresh requested");
-        loadRoomData(); // Эта функция сама запустит поллинг, если увидит статус 'processing'
+        loadRoomData();
     });
+
+    socket.on('stop_playback', () => {
+        console.log("🛑 Stop playback command received");
+        resetPlayerState();
+    });
+}
+
+function resetPlayerState() {
+    // 1. Сбрасываем HLS
+    if (hls) {
+        hls.destroy();
+        hls = null;
+    }
+
+    // 2. Сбрасываем нативный плеер
+    if (player) {
+        player.pause();
+        player.removeAttribute('src'); // Убираем источник
+        player.load(); // Сбрасываем буфер
+    }
+
+    // 3. Сбрасываем переменные
+    currentVideoId = null;
+
+    // 4. Обновляем UI
+    document.querySelectorAll('.video-item').forEach(el => el.classList.remove('active'));
+
+    // Показываем оверлей "Ожидание"
+    const overlay = document.getElementById('video-overlay');
+    if (overlay) {
+        overlay.style.display = 'flex';
+        document.getElementById('overlay-text').textContent = "Выберите видео";
+    }
+
+    // Сообщение в чат (локальное)
+    addSystemMessage("Текущее видео было удалено.");
 }
 
 /* --- HLS Player Logic --- */
