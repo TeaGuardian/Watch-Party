@@ -1,7 +1,8 @@
 #/app/sockets.py
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, date
 from functools import wraps
 
 from flask import session, request
@@ -9,11 +10,13 @@ from flask_socketio import emit, join_room, leave_room
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import AppConfig
 from app import socketio
-from core.models import User, Room, Video, db, RoomAccess, RoomBan
+from core.models import User, Room, Video, db, RoomAccess, RoomBan, DailyWatchStat
 
 ROOM_STATE = {}
 ACTIVE_CONNECTIONS = {}
 SID_MAP = {}
+WATCH_SESSIONS = {}
+WATCH_BUFFER = {}
 
 
 def db_session(f):
@@ -32,6 +35,33 @@ def db_session(f):
             if not db.is_closed():
                 db.close()
     return wrapper
+
+
+def flush_buffer_to_db(user_id):
+    if user_id not in WATCH_BUFFER or WATCH_BUFFER[user_id] <= 0:
+        return
+
+    seconds_to_add = WATCH_BUFFER[user_id]
+    today = date.today()
+
+    try:
+        # Пытаемся получить запись за сегодня
+        stat, created = DailyWatchStat.get_or_create(
+            user_id=user_id,
+            date=today,
+            defaults={'total_seconds': 0}
+        )
+        # Атомарное обновление (чтобы не было гонки потоков)
+        query = DailyWatchStat.update(total_seconds=DailyWatchStat.total_seconds + seconds_to_add).where(
+            DailyWatchStat.id == stat.id)
+        query.execute()
+
+        # Очищаем буфер
+        print(f"📈 Analytics: Saved {seconds_to_add}s for user {user_id}")
+        WATCH_BUFFER[user_id] = 0
+
+    except Exception as e:
+        print(f"Error flushing stats: {e}")
 
 
 def track_connection_add(user_id, room_uuid, sid):
@@ -171,6 +201,10 @@ def on_leave(data):
     user = get_current_user()
 
     if room_uuid and user:
+        flush_buffer_to_db(user.id)
+        if request.sid in WATCH_SESSIONS:
+            del WATCH_SESSIONS[request.sid]
+
         leave_room(room_uuid)
         emit('user_left', {
             'user_id': user.id,
@@ -211,6 +245,9 @@ def on_sync_action(data):
 
         elif data.get('action') == 'pause':
             ROOM_STATE[room_uuid]['paused'] = True
+            if request.sid in WATCH_SESSIONS:
+                if user: flush_buffer_to_db(user.id)
+                del WATCH_SESSIONS[request.sid]
 
         # Рассылаем всем кроме себя
         emit('sync_event', {
@@ -218,6 +255,7 @@ def on_sync_action(data):
             'timestamp': data.get('timestamp'),
             'actor': user.username
         }, to=room_uuid, include_self=False)
+
 
     except Exception as e:
         print(f"Sync error: {e}")
@@ -232,6 +270,48 @@ def on_heartbeat(data):
 
     # Если хартбит шлет Владелец, мы верим ему больше всех и обновляем глобальное состояние
     # Это позволяет новым юзерам подключаться точно в момент, где сейчас владелец
+
+    # --- ЛОГИКА ПОДСЧЕТА ВРЕМЕНИ ---
+    client_state = data.get('state')
+    sid = request.sid
+    now = time.time()
+
+    if client_state == 'playing':
+        if sid not in WATCH_SESSIONS:
+            # Начало новой сессии просмотра
+            WATCH_SESSIONS[sid] = {
+                'start_ts': now,  # Когда начали смотреть (для проверки 10 сек)
+                'last_ts': now  # Время последнего хартбита
+            }
+        else:
+            session_data = WATCH_SESSIONS[sid]
+            # Проверяем, смотрим ли мы уже более 10 секунд непрерывно
+            total_duration = now - session_data['start_ts']
+
+            if total_duration > 10:
+                # Считаем дельту с прошлого хартбита
+                delta = now - session_data['last_ts']
+
+                # Фильтр аномалий (если лаг сети и дельта огромная, например > 10 сек, игнорим)
+                if 0 < delta < 10:
+                    # Добавляем в буфер пользователя
+                    if user.id not in WATCH_BUFFER: WATCH_BUFFER[user.id] = 0
+                    WATCH_BUFFER[user.id] += int(delta)  # Округляем до секунд
+
+                    # Если накопилось больше 60 секунд (1 минута) -> сбрасываем в БД
+                    if WATCH_BUFFER[user.id] >= 60:
+                        flush_buffer_to_db(user.id)
+
+            # Обновляем метку времени
+            session_data['last_ts'] = now
+
+    else:
+        # Если статус не playing (paused), удаляем сессию
+        if sid in WATCH_SESSIONS:
+            flush_buffer_to_db(user.id)  # Сохраняем остатки
+            del WATCH_SESSIONS[sid]
+    # -------------------------------------
+
     try:
         room = Room.get(Room.uuid == room_uuid)
         if room.owner_id == user.id:

@@ -63,6 +63,8 @@ async function loadUserProfile() {
         if (currentUser.role === 'admin') {
             document.getElementById('admin-news-controls').style.display = 'block';
             document.getElementById('admin-panel-btn').style.display = 'block';
+            const voiceOption = document.getElementById('voice-chat-container');
+            if (voiceOption) voiceOption.style.display = 'flex';
         }
 
     } catch (e) {
@@ -114,6 +116,12 @@ function openTab(tabName) {
         if (tabName === 'rooms') {
             loadRooms(); // Загружаем сразу
             roomsPollInterval = setInterval(loadRooms, 10000);
+        }
+
+        if (tabName === 'profile') {
+            initStatsPolling();
+        } else {
+            if (statsTimer) clearTimeout(statsTimer);
         }
     }
 
@@ -544,6 +552,7 @@ async function createRoom() {
     const name = document.getElementById('room-name').value;
     const color = document.getElementById('room-color').value;
     const isPrivate = document.getElementById('room-private').checked;
+    const isVoice = document.getElementById('room-voice').checked;
 
     if (!name) return showError('Введите название');
 
@@ -551,12 +560,21 @@ async function createRoom() {
         const res = await fetch('/api/rooms', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ name, header_color: color, is_private: isPrivate })
+            body: JSON.stringify({
+                name,
+                header_color: color,
+                is_private: isPrivate,
+                voice_chat_enabled: isVoice
+            })
         });
 
         if (res.ok) {
             showSuccess('Комната создана');
             closeCreateRoomModal();
+            document.getElementById('room-name').value = '';
+            document.getElementById('room-private').checked = false;
+            document.getElementById('room-voice').checked = false; // Сброс
+
             loadRooms();
         } else {
             const data = await res.json();
@@ -584,4 +602,110 @@ async function deleteAccount() {
             showError('Ошибка удаления');
         }
     } catch(e) { showError('Ошибка сети'); }
+}
+
+/* /static/js/dashboard.js */
+
+let statsTimer = null;
+
+// Вызываем эту функцию внутри openTab('profile') или при загрузке профиля
+function initStatsPolling() {
+    // Сбрасываем предыдущий таймер если был
+    if (statsTimer) clearTimeout(statsTimer);
+    loadStats();
+}
+
+async function loadStats() {
+    const section = document.getElementById('stats-section');
+    const container = document.getElementById('chart-bars');
+    const totalEl = document.getElementById('stats-total-value');
+
+    try {
+        const res = await fetch('/api/me/stats');
+
+        // Если ошибка API или 500
+        if (!res.ok) throw new Error('API Error');
+
+        const data = await res.json();
+
+        // Показываем блок (скрыт по умолчанию)
+        section.style.display = 'block';
+
+        // 1. Рендер Итого
+        const totalHours = data.total_hours;
+        // Склонение: (число, ['час', 'часа', 'часов'])
+        const declension = getNoun(Math.floor(totalHours), 'час', 'часа', 'часов');
+
+        // Форматируем общее число (оставим 1 знак после запятой для точности)
+        totalEl.textContent = `${totalHours} ${declension}`;
+
+        // 2. Рендер Графика
+        renderChart(container, data.history);
+
+        // Успех: следующий опрос через 5 минут (300 сек)
+        statsTimer = setTimeout(loadStats, 300000);
+
+    } catch (e) {
+        console.warn("Stats load failed, retrying in 10s...", e);
+        // Ошибка: пробуем снова через 10 секунд
+        statsTimer = setTimeout(loadStats, 10000);
+    }
+}
+
+function renderChart(container, history) {
+    if (!history || history.length === 0) {
+        container.innerHTML = '<div style="width:100%;text-align:center;font-size:12px;color:#999">Нет данных</div>';
+        return;
+    }
+
+    // Находим максимум для масштабирования (чтобы самый высокий столбец был 100%)
+    // Берем минимум 1 час, чтобы график не скакал на мелких значениях
+    const maxSeconds = Math.max(...history.map(h => h.seconds), 3600);
+
+    // Очищаем и реверсируем (чтобы слева были старые даты, справа новые - хронология)
+    // API отдает от новых к старым, поэтому .reverse()
+    const sortedHistory = [...history].reverse();
+
+    container.innerHTML = sortedHistory.map(item => {
+        const hours = item.seconds / 3600;
+        const heightPercent = (item.seconds / maxSeconds) * 100;
+
+        // Логика форматирования: < 9 часов -> 8.5, >= 9 часов -> 10
+        let displayVal;
+        if (hours < 9) {
+            // Если совсем мало (0), показываем 0, иначе до десятых
+            displayVal = hours === 0 ? "0" : hours.toFixed(1);
+        } else {
+            displayVal = Math.round(hours);
+        }
+
+        // Формат даты: 2025-12-04 -> 04.12
+        const dateObj = new Date(item.date);
+        const dateStr = `${String(dateObj.getDate()).padStart(2, '0')}.${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+
+        return `
+            <div class="chart-column">
+                <div class="bar-value">${displayVal > 0 ? displayVal : ''}</div>
+                <div class="bar-fill" style="height: ${heightPercent}%;" title="${item.minutes} мин."></div>
+                <div class="bar-date">${dateStr}</div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Хелпер для склонения (1 час, 2 часа, 5 часов)
+function getNoun(number, one, two, five) {
+    let n = Math.abs(number);
+    n %= 100;
+    if (n >= 5 && n <= 20) {
+        return five;
+    }
+    n %= 10;
+    if (n === 1) {
+        return one;
+    }
+    if (n >= 2 && n <= 4) {
+        return two;
+    }
+    return five;
 }

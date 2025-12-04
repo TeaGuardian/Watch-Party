@@ -209,9 +209,11 @@
 .access-denied {
     text-align: center;
     padding: 50px;
-    background: white;
+    background: var(--bg-card);
+    color: var(--text-main);
     border-radius: 12px;
     margin-top: 20px;
+    box-shadow: 0 4px 12px var(--shadow-color);
 }
 
 /* --- Modal --- */
@@ -347,4 +349,109 @@
 .btn-text-edit:hover {
     opacity: 1;
     transform: scale(1.1);
+}
+
+/* --- Stats Chart --- */
+.stats-container {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.stats-container h3 {
+    font-size: 16px;
+    margin-bottom: 20px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.chart-wrapper {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 20px;
+    overflow-x: auto; /* Горизонтальный скролл разрешен */
+    overflow-y: hidden; /* Вертикальный запрещен */
+}
+
+.chart-bars {
+    display: flex;
+    align-items: flex-end; /* Прижимаем всё к низу */
+    justify-content: center;
+    gap: 15px;
+    height: 220px; /* Общая высота области графика */
+    width: 100%;
+    min-width: 300px;
+    padding-top: 30px;
+    padding-bottom: 60px;
+
+    border-bottom: 1px solid var(--border-color);
+    position: relative;
+    box-sizing: border-box; /* Чтобы padding не увеличивал height */
+}
+
+.chart-column {
+    flex: none; /* Фиксированная ширина */
+    width: 30px;
+    height: 100%; /* Занимает всю высоту контейнера (минус паддинги) */
+
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end; /* Контент прижат к низу */
+    align-items: center;
+    position: relative;
+}
+
+.bar-fill {
+    width: 100%;
+    background-color: var(--primary-color);
+    border-radius: 4px 4px 0 0;
+    transition: height 0.5s ease;
+    min-height: 4px;
+    position: relative;
+    cursor: pointer;
+    opacity: 0.8;
+}
+
+.bar-fill:hover {
+    opacity: 1;
+    box-shadow: 0 0 10px var(--primary-color);
+}
+
+.bar-value {
+    position: static;
+    margin-bottom: 5px;
+    font-size: 11px;
+    color: var(--text-main);
+    font-weight: bold;
+    width: 100%;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.bar-date {
+    position: absolute;
+    bottom: -45px;
+    left: 50%;
+    transform: translate(-50%, 0) rotate(-45deg);
+    transform-origin: top center;
+
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    text-align: right;
+    pointer-events: none;
+}
+
+.stats-summary {
+    text-align: center;
+    background: var(--bg-hover);
+    padding: 15px;
+    border-radius: 8px;
+    margin-top: 10px;
+}
+
+.total-value {
+    font-size: 18px;
+    color: var(--primary-color);
+    margin-left: 5px;
 }

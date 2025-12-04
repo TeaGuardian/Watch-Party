@@ -2,11 +2,11 @@
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from peewee import (
     Model, CharField, BooleanField, DateTimeField,
     ForeignKeyField, IntegerField, BigIntegerField,
-    UUIDField, TextField
+    UUIDField, TextField, DateField
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -97,9 +97,9 @@ class Room(BaseModel):
 
     # Приватность
     is_private = BooleanField(default=False)
-    # Разрешить зрителям управлять плеером (только для закрытых)
+    # Разрешить зрителям управлять плеером
     allow_guest_control = BooleanField(default=False)
-
+    has_voice_chat = BooleanField(default=False)
     created_at = DateTimeField(default=datetime.now)
 
     def to_dict(self):
@@ -153,6 +153,18 @@ class Video(BaseModel):
         }
 
 
+class DailyWatchStat(BaseModel):
+    """Статистика просмотра пользователя по дням"""
+    user = ForeignKeyField(User, backref='daily_stats', on_delete='CASCADE')
+    date = DateField(default=date.today)
+    total_seconds = IntegerField(default=0) # Храним в секундах, на фронте переведем в часы/минуты
+
+    class Meta:
+        # Уникальная запись для пары "Юзер + Дата"
+        indexes = (
+            (('user', 'date'), True),
+        )
+
 # --- Новости ---
 
 class NewsPost(BaseModel):
@@ -182,9 +194,23 @@ class RoomAccess(BaseModel):
         )
 
 
+class UserVolumeSettings(BaseModel):
+    """Персональные настройки громкости"""
+    owner = ForeignKeyField(User, backref='volume_settings', on_delete='CASCADE') # Кто настроил
+    target = ForeignKeyField(User, backref='targeted_by_volumes', on_delete='CASCADE') # Кого настроил
+    volume = IntegerField(default=100) # Процент 0-200
+    updated_at = DateTimeField(default=datetime.now)
+
+    class Meta:
+        # Уникальный индекс: один юзер настраивает другого юзера один раз
+        indexes = (
+            (('owner', 'target'), True),
+        )
+
+
 # --- Функция инициализации таблиц ---
 
 def create_tables():
     with db:
         # Добавлен параметр safe=True, чтобы не падать, если таблицы уже есть
-        db.create_tables([User, Room, RoomBan, Video, NewsPost, RoomAccess], safe=True)
+        db.create_tables([User, Room, RoomBan, Video, NewsPost, RoomAccess, DailyWatchStat, UserVolumeSettings], safe=True)

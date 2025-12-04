@@ -23,6 +23,9 @@ def login_required(f):
             session.clear()
             return jsonify({'error': 'Account is banned', 'code': 'banned'}), 403
 
+        if user.role != 'admin' and False:
+            return jsonify({'error': 'Сервис на закрытом бетатесте', 'code': 'banned'}), 403
+
         # Прокидываем объект пользователя в функцию-контроллер
         return f(current_user=user, *args, **kwargs)
 

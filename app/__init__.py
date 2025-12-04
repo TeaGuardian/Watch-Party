@@ -4,12 +4,11 @@ from flask_socketio import SocketIO
 import sys
 import os
 
-from core.models import User
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.decorators import login_required, admin_required
 from config import AppConfig, StorageConfig
 from core.database import db
+from core.models import User, Room
 
 # Инициализируем SocketIO (пока без логики, она будет позже)
 socketio = SocketIO(cors_allowed_origins="*")
@@ -63,7 +62,7 @@ def create_app():
 
     @app.route('/room/<uuid:room_uuid>')
     def room_page(room_uuid):
-        # 1. Ручная проверка авторизации
+        # 1. Проверка авторизации
         user_id = session.get('user_id')
         if not user_id:
             return redirect('/login')
@@ -73,14 +72,26 @@ def create_app():
             session.clear()
             return redirect('/login')
 
+        # [NEW] 2. Получаем комнату из БД, чтобы проверить настройки
+        room = Room.get_or_none(Room.uuid == room_uuid)
+        if not room:
+            return redirect('/')  # Комната не найдена
+
+        # 3. Проверка лимитов подключений
         r_uuid_str = str(room_uuid)
         user_conns = ACTIVE_CONNECTIONS.get(current_user.id, {})
+
+        # Если юзер еще не в этой комнате, но у него уже открыто макс. кол-во других комнат
         if r_uuid_str not in user_conns and len(user_conns) >= AppConfig.MAX_OPENED_ROOMS:
             return redirect('/')
 
-        return render_template('room.html',
+        # [NEW] 4. Выбор шаблона
+        template_name = 'voiced_room.html' if room.has_voice_chat else 'room.html'
+
+        return render_template(template_name,
                                room_uuid=str(room_uuid),
-                               max_video_size=AppConfig.MAX_VIDEO_SIZE_BYTES)
+                               max_video_size=AppConfig.MAX_VIDEO_SIZE_BYTES,
+                               current_user=current_user)
 
     @app.route('/content/<path:filename>')
     def serve_content(filename):

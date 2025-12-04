@@ -74,7 +74,7 @@ async function loadRoomData() {
         isOwner = data.is_owner;
         isPrivate = data.is_private;
         isAllowedGuestControl = data.allow_guest_control;
-        if (isOwner) {
+        if (isOwner || isAllowedGuestControl) {
             document.getElementById('owner-controls').style.display = 'block';
             document.getElementById('btn-settings').style.display = 'block';
         }
@@ -546,6 +546,7 @@ function updateViewerStatus(data) {
         item = document.createElement('div');
         item.id = `viewer-${data.sid}`;
         item.className = 'viewer-card status-gray';
+        item.setAttribute('data-user-id', data.user_id);
         item.innerHTML = `
             <div style="position:relative;">
                 <img src="${avatarSrc}" class="viewer-avatar">

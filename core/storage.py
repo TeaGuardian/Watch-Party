@@ -189,9 +189,13 @@ class MinioStorageManager(BaseStorageManager):
         except Exception as e:
             logger.error(f"S3 delete_folder error ({folder_path}): {e}")
             return False
+
     def get_url(self, path: str) -> str:
-        protocol = "https" if StorageConfig.SECURE else "http"
-        return f"{protocol}://{StorageConfig.ENDPOINT}/{self.bucket}/{path}"
+        """
+        Возвращает относительный URL, который будет обработан Nginx.
+        Nginx перенаправит /s3/... -> MinIO container
+        """
+        return f"/s3/{self.bucket}/{path}"
 
 
 if StorageConfig.USE_S3:

@@ -1,5 +1,6 @@
 #/app/routes.py
 import hashlib
+import json
 import re
 import secrets
 import string
@@ -17,7 +18,8 @@ from core.storage import storage
 from . import socketio
 from .decorators import login_required, admin_required
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.models import Room, Video, NewsPost, User, RoomAccess, db
+from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchStat
+from core.cache import get_cache, set_cache
 from core.validators import validate_password_strength
 from config import BotConfig, AppConfig
 from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task
@@ -151,6 +153,61 @@ def get_me(current_user: User):
         'avatar_url': storage.get_url(current_user.avatar_path),
         'approved_by': current_user.approved_by.username if current_user.approved_by else None
     })
+
+
+@api.route('/me/stats', methods=['GET'])
+@login_required
+def get_my_stats(current_user):
+    """
+    Статистика просмотра пользователя.
+    Кэшируется на 1 час.
+    """
+    cache_key = f"user_stats_{current_user.id}"
+
+    # 1. Проверяем кэш
+    cached_data = get_cache(cache_key)
+    if cached_data:
+        return jsonify(json.loads(cached_data))
+
+    # 2. Если кэша нет - считаем из БД
+    try:
+        # Общее время (сумма по всем дням)
+        # fn.COALESCE вернет 0, если записей нет (иначе вернет None)
+        total_seconds = DailyWatchStat.select(fn.COALESCE(fn.SUM(DailyWatchStat.total_seconds), 0)) \
+            .where(DailyWatchStat.user == current_user) \
+            .scalar()
+
+        # История за последние 10 записей (дней)
+        # Сортируем от новых к старым
+        history_query = DailyWatchStat.select() \
+            .where(DailyWatchStat.user == current_user) \
+            .order_by(DailyWatchStat.date.desc()) \
+            .limit(10)
+
+        history_list = []
+        for h in history_query:
+            history_list.append({
+                'date': h.date.strftime("%Y-%m-%d"),
+                'seconds': h.total_seconds,
+                # Для удобства фронта можно сразу передать минуты
+                'minutes': round(h.total_seconds / 60, 1)
+            })
+
+        response_data = {
+            'success': True,
+            'total_seconds': total_seconds,
+            'total_hours': round(total_seconds / 3600, 1),
+            'history': history_list
+        }
+
+        # 3. Сохраняем в Redis на 1 час (3600 сек)
+        set_cache(cache_key, json.dumps(response_data), ttl=3600)
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        print(f"Stats error: {e}")
+        return jsonify({'error': 'Failed to calculate stats'}), 500
 
 
 @api.route('/tg_link', methods=['GET'])
@@ -418,6 +475,7 @@ def create_room(current_user):
     is_private = bool(data.get('is_private', False))
     header_color = data.get('header_color', '#0d6efd')  # Синий по умолчанию
     allow_guest_control = bool(data.get('allow_guest_control', False))
+    voice_chat_enabled = bool(data.get('voice_chat_enabled', False))
 
     if not name:
         return jsonify({'error': 'Name is required'}), 400
@@ -428,7 +486,8 @@ def create_room(current_user):
             name=name,
             is_private=is_private,
             header_color=header_color,
-            allow_guest_control=allow_guest_control
+            allow_guest_control=allow_guest_control,
+            has_voice_chat = voice_chat_enabled
         )
         return jsonify({'success': True, 'uuid': str(room.uuid)})
 
@@ -484,6 +543,7 @@ def get_room_details(current_user, room_uuid):
             'is_owner': is_owner,
             'is_private': room.is_private,
             'allow_guest_control': room.allow_guest_control,
+            'has_voice_chat': room.has_voice_chat,  # [NEW]
             'has_access': True
         })
 

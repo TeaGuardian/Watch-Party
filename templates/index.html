@@ -16,11 +16,9 @@
     <!-- Секция: Новости -->
     <div id="tab-news" class="tab-content active">
         <div id="news-container" class="news-grid">
-            <!-- Сюда JS загрузит посты -->
             <div class="loading-spinner">Загрузка...</div>
         </div>
-        
-        <!-- Кнопка для админа (скрыта по умолчанию) -->
+
         <div id="admin-news-controls" style="display: none; margin-top: 20px;">
             <h3>Добавить новость</h3>
             <div class="input-container">
@@ -57,7 +55,6 @@
                 <div>
                     <h2 id="profile-username">User</h2>
                     <span id="profile-status" class="status-badge">Loading...</span>
-                    <!-- Кнопка удаления (появится через JS если есть аватар) -->
                     <button id="btn-delete-avatar" class="btn-text-danger" style="display:none; font-size:12px; margin-top:5px; border:none; background:none; cursor:pointer;" onclick="deleteAvatar()">Удалить фото</button>
                 </div>
             </div>
@@ -67,7 +64,6 @@
                     <span>Telegram:</span>
                     <span id="tg-status">Не привязан</span>
                 </div>
-                <!-- Кнопка привязки ТГ -->
                 <div id="tg-connect-block" style="margin-top: 10px;">
                     <button class="btn btn-secondary" onclick="generateTgLink()">Привязать Telegram</button>
                     <div id="tg-link-result" class="tg-link-box" style="display:none;">
@@ -75,10 +71,24 @@
                         <p class="small-text">Код: <span id="tg-code-text"></span></p>
                     </div>
                 </div>
-                
+
                 <div class="detail-row" style="margin-top: 20px;">
                     <span>Кем одобрен:</span>
                     <span id="approved-by">-</span>
+                </div>
+            </div>
+
+            <!-- Блок статистики -->
+            <div id="stats-section" class="stats-container" style="display: none;">
+                <h3>Активность (10 дней)</h3>
+                <div class="chart-wrapper">
+                    <div id="chart-bars" class="chart-bars">
+                        <!-- Бары генерируются JS -->
+                    </div>
+                </div>
+                <div class="stats-summary">
+                    <span class="total-label">Всего просмотрено:</span>
+                    <strong id="stats-total-value" class="total-value">-</strong>
                 </div>
             </div>
 
@@ -94,13 +104,14 @@
         </div>
     </div>
 
-    <!-- Заглушка для непроверенных пользователей -->
+    <!-- Заглушка доступа -->
     <div id="access-denied-placeholder" class="access-denied" style="display: none;">
         <h3>🔒 Доступ ограничен</h3>
         <p>Чтобы видеть новости и комнаты, необходимо:</p>
         <ol>
             <li>Привязать Telegram в профиле.</li>
             <li>Дождаться подтверждения администратором.</li>
+            <li>Если вы были авторизованы, то возможно сервис на закрытом бетатесте нового функционала.</li>
         </ol>
         <button class="btn btn-primary" onclick="openTab('profile')">Перейти в профиль</button>
     </div>
@@ -115,7 +126,7 @@
             <input type="text" id="room-name" class="input-field" placeholder=" ">
             <label class="input-label">Название</label>
         </div>
-        
+
         <div class="input-container">
             <label style="position:relative; font-size: 14px; color: #666;">Цвет шапки</label>
             <div class="color-picker-wrapper">
@@ -128,6 +139,12 @@
             <label for="room-private">Закрытая комната</label>
         </div>
 
+        <!-- Чекбокс голосового чата -->
+        <div class="checkbox-container" id="voice-chat-container" style="display: none;">
+            <input type="checkbox" id="room-voice">
+            <label for="room-voice">🎙️ Голосовой чат (Beta)</label>
+        </div>
+
         <div class="modal-actions">
             <button class="btn btn-secondary" onclick="closeCreateRoomModal()">Отмена</button>
             <button class="btn btn-primary" onclick="createRoom()">Создать</button>
@@ -135,6 +152,7 @@
     </div>
 </div>
 
+<!-- Модальное окно редактирования новости -->
 <div id="edit-news-modal" class="modal-overlay" style="display: none;">
     <div class="modal-card">
         <h3>Редактировать новость</h3>
@@ -142,7 +160,6 @@
             <textarea id="edit-news-content" class="input-field" rows="6" placeholder=" "></textarea>
             <label class="input-label">Markdown текст</label>
         </div>
-        <!-- Скрытое поле для ID -->
         <input type="hidden" id="edit-news-id">
 
         <div class="modal-actions">
@@ -152,7 +169,7 @@
     </div>
 </div>
 
-
+<!-- Модальное окно кроппера -->
 <div id="cropper-modal" class="modal-overlay" style="display: none;">
     <div class="modal-card">
         <h3>Редактирование фото</h3>
@@ -178,6 +195,5 @@
 
 <!-- 3. Наши стили и скрипты -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
-<!-- Обратите внимание: загружаем dashboard.js ПОСЛЕ библиотек -->
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}
