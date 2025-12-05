@@ -215,6 +215,145 @@ async function unbanUser(userId) {
     } catch(e) { showError('Ошибка'); }
 }
 
+/* --- NEW SETTINGS LOGIC --- */
+
+// Состояние поповера
+let selectedUserForAction = null;
+
+function toggleSettings() {
+    const area = document.getElementById('settings-area');
+    const isHidden = area.style.display === 'none';
+
+    if (isHidden) {
+        area.style.display = 'block';
+        loadSettingsData(); // Загружаем свежие данные
+        // Скроллим вниз к настройкам
+        area.scrollIntoView({ behavior: 'smooth' });
+    } else {
+        area.style.display = 'none';
+    }
+}
+
+function switchSettingsTab(tabName) {
+    // Скрываем все колонки
+    document.querySelectorAll('.settings-col').forEach(el => el.classList.remove('active'));
+    // Показываем нужную
+    document.getElementById(`col-${tabName}`).classList.add('active');
+
+    // Обновляем кнопки табов
+    document.querySelectorAll('.s-tab-btn').forEach(el => el.classList.remove('active'));
+    event.target.classList.add('active');
+}
+
+async function loadSettingsData() {
+    // Заполняем форму
+    try {
+        const res = await fetch(`/api/rooms/${ROOM_UUID}`);
+        const data = await res.json();
+        const r = data.room;
+
+        document.getElementById('set-room-name').value = r.name;
+        document.getElementById('set-room-color').value = r.header_color;
+        document.getElementById('set-is-private').checked = r.is_private;
+        document.getElementById('set-guest-control').checked = r.allow_guest_control;
+
+        loadBans(); // Существующая функция (надо убедиться, что она рендерит в правильный div)
+
+        // Логика списка гостей
+        if (r.is_private) {
+            loadAccessList();
+            document.getElementById('guest-access-list').style.display = 'flex';
+            document.getElementById('public-room-warning').style.display = 'none';
+        } else {
+            document.getElementById('guest-access-list').style.display = 'none';
+            document.getElementById('public-room-warning').style.display = 'block';
+        }
+
+    } catch(e) { console.error(e); }
+}
+
+async function loadAccessList() {
+    const list = document.getElementById('guest-access-list');
+    list.innerHTML = '<div style="color:#777;text-align:center">Загрузка...</div>';
+
+    try {
+        const res = await fetch(`/api/rooms/${ROOM_UUID}/access`);
+        if (!res.ok) throw new Error("No access");
+        const data = await res.json();
+
+        if (data.users.length === 0) {
+            list.innerHTML = '<div style="color:#777;text-align:center">Список пуст</div>';
+            return;
+        }
+
+        list.innerHTML = data.users.map(u => `
+            <div class="list-item">
+                <div style="display:flex; align-items:center;">
+                    <img src="${u.avatar_url}" class="list-avatar">
+                    ${u.username}
+                </div>
+                <button class="btn-icon-action" style="color:orange" onclick="revokeAccess(${u.id}, '${u.username}')" title="Лишить доступа">✖</button>
+            </div>
+        `).join('');
+
+    } catch (e) {
+        list.innerHTML = '<div style="color:#777;text-align:center">Ошибка</div>';
+    }
+}
+
+/* --- Popover Logic --- */
+
+function showUserPopover(event, userId, username) {
+    event.stopPropagation();
+    selectedUserForAction = { id: userId, name: username };
+
+    const popover = document.getElementById('user-popover');
+    document.getElementById('pop-username').textContent = username;
+
+    // Показываем кнопку "Выгнать" только если комната приватная
+    const kickBtn = document.getElementById('btn-pop-kick');
+    kickBtn.style.display = isPrivate ? 'block' : 'none';
+
+    // Позиционирование
+    const rect = event.currentTarget.getBoundingClientRect();
+    popover.style.top = (window.scrollY + rect.bottom + 5) + 'px';
+    popover.style.left = (rect.left - 20) + 'px';
+    popover.style.display = 'block';
+
+    // Закрытие по клику вне
+    const closeFn = (e) => {
+        if (!popover.contains(e.target)) {
+            popover.style.display = 'none';
+            document.removeEventListener('click', closeFn);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', closeFn), 0);
+}
+
+function confirmBanUser() {
+    if (!selectedUserForAction) return;
+    banUser(selectedUserForAction.id, selectedUserForAction.name); // Используем существующую функцию
+    document.getElementById('user-popover').style.display = 'none';
+}
+
+function confirmKickUser() {
+    if (!selectedUserForAction) return;
+    revokeAccess(selectedUserForAction.id, selectedUserForAction.name);
+    document.getElementById('user-popover').style.display = 'none';
+}
+
+async function revokeAccess(userId, username) {
+    if (!confirm(`Закрыть доступ для ${username}?`)) return;
+
+    try {
+        const res = await fetch(`/api/rooms/${ROOM_UUID}/access/${userId}`, { method: 'DELETE' });
+        if (res.ok) {
+            showSuccess(`${username} удален из списка доступа`);
+            loadSettingsData(); // Обновляем список
+        }
+    } catch(e) { showError('Ошибка'); }
+}
+
 /* --- LOGIC: Knock-Knock --- */
 
 function sendKnock() {
@@ -587,16 +726,16 @@ function updateViewerStatus(data) {
         item.id = `viewer-${data.sid}`;
         item.className = 'viewer-card status-gray';
         item.setAttribute('data-user-id', data.user_id);
+
+        if (isOwner && data.user_id !== myUserId) {
+            item.style.cursor = 'pointer';
+            item.onclick = (e) => showUserPopover(e, data.user_id, data.username);
+        }
+
         item.innerHTML = `
             <div style="position:relative;">
                 <img src="${avatarSrc}" class="viewer-avatar">
-                ${(isOwner && data.user_id !== myUserId) ?
-                  `<div onclick="banUser(${data.user_id}, '${data.username}')"
-                        style="position:absolute; top:-5px; right:-5px; background:red; color:white;
-                               width:15px; height:15px; border-radius:50%; font-size:10px;
-                               cursor:pointer; display:flex; justify-content:center; align-items:center;"
-                        title="Бан">⛔</div>`
-                  : ''}
+                <!-- Старая иконка бана удалена, теперь через меню -->
             </div>
             <span class="viewer-name">${data.username}</span>
         `;
@@ -823,13 +962,13 @@ function changeVideo(videoId) {
 function triggerUpload() {
     if (document.getElementById('upload-progress').style.display == 'none') {
         document.getElementById('file-upload').click();
-        document.getElementById('video-upload-bt').disabled = true;
     } else {alert("Дождитесь полной загрузки текущего видео или перезагрузите страницу.")}
 
 }
 
 async function uploadVideo() {
     const input = document.getElementById('file-upload');
+    const btn = document.getElementById('video-upload-bt');
     if (!input.files.length) return;
 
     const file = input.files[0];
@@ -851,6 +990,7 @@ async function uploadVideo() {
         return;
     }
     // ------------------------
+    btn.disabled = true;
     const formData = new FormData();
     formData.append('video', file);
 
@@ -871,15 +1011,28 @@ async function uploadVideo() {
     };
 
     xhr.onload = async () => {
+        btn.disabled = false;
         document.getElementById('video-upload-bt').disabled = false;
         if (xhr.status === 200) {
             console.log('Видео загружено и обрабатывается. Оно появится в списке автоматически.');
             document.getElementById('upload-progress').style.display = 'none';
-            // Перезагрузим список (для простоты)
+            input.value = '';
             loadRoomData();
         } else {
-            alert('Ошибка загрузки');
+            document.getElementById('upload-progress').style.display = 'none';
+            try {
+                const err = JSON.parse(xhr.responseText);
+                alert('Ошибка: ' + (err.error || 'Неизвестная ошибка'));
+            } catch (e) {
+                alert('Ошибка загрузки (код ' + xhr.status + ')');
+            }
         }
+    };
+
+    xhr.onerror = () => {
+        btn.disabled = false;
+        document.getElementById('upload-progress').style.display = 'none';
+        alert('Ошибка сети при загрузке файла.');
     };
 
     xhr.send(formData);

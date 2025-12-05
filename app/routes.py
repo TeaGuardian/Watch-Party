@@ -676,6 +676,42 @@ def unban_user_in_room(current_user, room_uuid, user_id):
     return jsonify({'success': True})
 
 
+@api.route('/rooms/<uuid:room_uuid>/access', methods=['GET'])
+@login_required
+def get_room_access_list(current_user, room_uuid):
+    """Список тех, кому разрешен вход (для приватных комнат)"""
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        if room.owner != current_user:
+            return jsonify({'error': 'Access denied'}), 403
+
+        access_entries = RoomAccess.select().where(RoomAccess.room == room)
+        users = [entry.user.to_dict() for entry in access_entries]
+
+        return jsonify({'success': True, 'users': users})
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Not found'}), 404
+
+
+@api.route('/rooms/<uuid:room_uuid>/access/<int:user_id>', methods=['DELETE'])
+@login_required
+def revoke_room_access(current_user, room_uuid, user_id):
+    """Удалить из списка доступа"""
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        if room.owner != current_user:
+            return jsonify({'error': 'Access denied'}), 403
+
+        query = RoomAccess.delete().where(
+            (RoomAccess.room == room) &
+            (RoomAccess.user_id == user_id)
+        )
+        query.execute()
+        return jsonify({'success': True})
+    except:
+        return jsonify({'error': 'Error'}), 500
+
+
 # --- ВИДЕО И ЗАГРУЗКА ---
 
 @api.route('/rooms/<uuid:room_uuid>/upload', methods=['POST'])
