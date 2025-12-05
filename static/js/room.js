@@ -1054,7 +1054,7 @@ function formatDuration(sec) {
 }
 
 async function copyLink() {
-    const url = window.location.href;
+    const url = `${window.location.href}?ref=${encodeURIComponent(myUsername)}`;
 
     try {
         // Пробуем современный API

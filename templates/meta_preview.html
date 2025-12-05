@@ -1,0 +1,28 @@
+<!-- #/templates/meta_preview.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ meta.title }}</title>
+
+    <!-- Open Graph / Facebook / Telegram -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ meta.title }}">
+    <meta property="og:description" content="{{ meta.description }}">
+    <meta property="og:site_name" content="Watch Party">
+    <!-- Если есть картинка -->
+    {% if meta.image %}
+    <meta property="og:image" content="{{ meta.image }}">
+    <meta name="twitter:image" content="{{ meta.image }}">
+    <meta name="twitter:card" content="summary_large_image">
+    {% endif %}
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{{ meta.title }}">
+    <meta name="twitter:description" content="{{ meta.description }}">
+</head>
+<body>
+    <!-- Пустое тело, ботам оно не нужно, а люди сюда не попадут -->
+</body>
+</html>
