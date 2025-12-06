@@ -153,14 +153,18 @@ async function saveRoomSettings() {
 
         if (res.ok) {
             showSuccess('Настройки сохранены');
-            document.getElementById('settings-modal').style.display = 'none';
-            // Обновляем локально цвет и название
-            document.getElementById('room-name').textContent = data.name;
-            // Цвет обновится при перезагрузке или через сокет, если реализуем
+            const area = document.getElementById('settings-area');
+            if (area) area.style.display = 'none';
+            const nameEl = document.getElementById('room-name');
+            if (nameEl) nameEl.textContent = data.name;
+
         } else {
             showError('Ошибка сохранения');
         }
-    } catch(e) { showError('Ошибка сети'); }
+    } catch(e) {
+        console.error("Save error:", e);
+        showError('Ошибка выполнения (см. консоль)');
+    }
 }
 
 /* --- BAN LOGIC --- */
