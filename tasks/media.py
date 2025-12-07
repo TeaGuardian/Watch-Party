@@ -2,10 +2,12 @@
 import os
 import shutil
 import subprocess
-import socketio
 import logging
 from uuid import uuid4
 from datetime import datetime, timedelta
+
+# [UPD] Импортируем SocketIO из пакета, а НЕ из app
+from flask_socketio import SocketIO
 
 from tasks.celery_app import app
 from core.models import Video, Room, User
@@ -13,26 +15,46 @@ from core.storage import storage
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import AppConfig
+from config import AppConfig, RedisConfig
 
 logger = logging.getLogger("CeleryMedia")
+
+# [UPD] Создаем независимый эмиттер, подключенный к тому же Redis
+# message_queue должен совпадать с тем, что в app/__init__.py
+celery_socketio = SocketIO(message_queue=RedisConfig.URL)
+
+
+def get_video_duration(file_path):
+    """Получает длительность видео в секундах через ffprobe"""
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return float(result.stdout)
+    except Exception as e:
+        logger.error(f"FFprobe error: {e}")
+        return 0.0
 
 
 @app.task(name='tasks.media.process_video')
 def process_video_task(video_id: int, local_source_path: str):
-    logger.info(f"Start processing video {video_id} from {local_source_path}")
+    logger.info(f"Start processing video {video_id}")
 
-    # [NEW] Проверка 1: А не удалил ли пользователь видео, пока оно стояло в очереди?
     try:
         video = Video.get_by_id(video_id)
     except Exception:
-        logger.info(f"Video {video_id} record missing. Cancelling processing (User deleted it?).")
-        if os.path.exists(local_source_path):
-            os.remove(local_source_path)
+        if os.path.exists(local_source_path): os.remove(local_source_path)
         return
 
     video.status = 'processing'
     video.save()
+
+    room_uuid = str(video.room.uuid)
 
     transcode_dir = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode", str(uuid4()))
     os.makedirs(transcode_dir, exist_ok=True)
@@ -40,38 +62,61 @@ def process_video_task(video_id: int, local_source_path: str):
     output_path = os.path.join(transcode_dir, playlist_name)
 
     try:
-        # [NEW] Проверка 2: Перед тяжелым FFmpeg еще раз проверим (если очередь была долгой)
         if not Video.select().where(Video.id == video_id).exists():
-            raise Exception("Video deleted by user before transcoding")
+            raise Exception("Deleted before start")
+
+        total_duration = get_video_duration(local_source_path)
+        video.duration = int(total_duration)
+        video.save()
 
         command = [
             'ffmpeg', '-y', '-i', local_source_path,
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-threads', '0',
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-crf', '24',
             '-c:a', 'aac', '-b:a', '128k',
             '-hls_time', '6',
             '-hls_playlist_type', 'vod',
             '-hls_segment_filename', os.path.join(transcode_dir, 'segment_%03d.ts'),
+            '-progress', 'pipe:1',
             output_path
         ]
 
-        # Получаем длительность через ffprobe (опционально, но полезно)
-        # Здесь опустим для краткости, оставим 0 или старую логику
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        last_percent = -1
+
+        for line in process.stdout:
+            if "out_time_ms=" in line:
+                try:
+                    time_ms = int(line.split('=')[1].strip())
+                    current_seconds = time_ms / 1000000.0
+
+                    if total_duration > 0:
+                        percent = int((current_seconds / total_duration) * 100)
+                        percent = min(99, max(0, percent))
+
+                        if percent > last_percent:
+                            last_percent = percent
+                            celery_socketio.emit('processing_progress', {
+                                'video_id': video_id,
+                                'percent': percent
+                            }, room=room_uuid)
+
+                except ValueError:
+                    pass
+
+        process.wait()
         if process.returncode != 0:
-            raise Exception(f"FFmpeg failed: {process.stderr.decode()}")
+            raise Exception("FFmpeg process failed")
 
-        # [NEW] Проверка 3: Пользователь мог удалить видео ВО ВРЕМЯ обработки
         if not Video.select().where(Video.id == video_id).exists():
-            raise Exception("Video deleted by user during transcoding")
+            raise Exception("Video deleted during transcoding")
 
-        # 3. Загрузка.
-        # [NEW] Используем путь на основе ХЭША, а не ID видео
-        # Если хэша нет (старое видео или баг), фолбэк на старую логику, но у нас он есть.
         if video.file_hash:
             storage_folder = f"{AppConfig.SHARED_CONTENT_PATH}/{video.file_hash}/"
         else:
-            # Fallback (не должно случаться при новом коде)
             storage_folder = f"users/{video.room.owner_id}/rooms/{video.room.uuid}/videos/{video.id}/"
 
         for filename in os.listdir(transcode_dir):
@@ -83,38 +128,28 @@ def process_video_task(video_id: int, local_source_path: str):
                 if not storage.save_file(content, dest_path):
                     raise Exception(f"Failed to upload {filename}")
 
-        # 4. Финиш
-        # Еще раз перечитываем запись, чтобы не перезатереть возможные изменения (мало ли)
-        # Но peewee объекты не обновляются сами.
         video = Video.get_by_id(video_id)
-
         video.status = 'ready'
-        full_path = storage_folder + playlist_name
-        video.storage_path = full_path.replace('\\', '/')
-
-        # Попытка достать duration из метаданных (упрощенно - размер сегментов * кол-во)
-        # Или просто оставим как есть.
-
+        video.storage_path = (storage_folder + playlist_name).replace('\\', '/')
         video.save()
-        logger.info(f"Video {video_id} processed successfully. Stored at {storage_folder}")
+
+        celery_socketio.emit('playlist_refresh', {}, room=room_uuid)
+        logger.info(f"Video {video_id} done.")
 
     except Exception as e:
-        logger.error(f"Processing interrupted/failed: {e}")
-        # Если ошибка "Video deleted...", то запись в БД уже нет, save() упадет.
-        # Проверяем существование перед обновлением статуса
+        logger.error(f"Processing failed: {e}")
         try:
             v = Video.get_or_none(Video.id == video_id)
             if v:
                 v.status = 'error'
                 v.save()
+                celery_socketio.emit('playlist_refresh', {}, room=room_uuid)
         except:
             pass
 
     finally:
-        if os.path.exists(transcode_dir):
-            shutil.rmtree(transcode_dir)
-        if os.path.exists(local_source_path):
-            os.remove(local_source_path)
+        if os.path.exists(transcode_dir): shutil.rmtree(transcode_dir)
+        if os.path.exists(local_source_path): os.remove(local_source_path)
 
 
 @app.task(name='tasks.media.delete_storage_folder')
@@ -218,8 +253,73 @@ def cleanup_old_videos_task():
     for r_uuid in affected_rooms:
         try:
             # Шлем событие 'playlist_refresh' в комнату
-            socketio.emit('playlist_refresh', {}, to=r_uuid)
+            celery_socketio.emit('playlist_refresh', {}, to=r_uuid)
             logger.info(f"Notified room {r_uuid} about auto-deletion")
         except Exception as e:
             logger.error(f"Failed to emit socket to {r_uuid}: {e}")
     logger.info(f"Cleanup finished. Records removed: {deleted_records}. File groups removed: {deleted_files}.")
+
+
+@app.task(name='tasks.media.check_stuck_videos')
+def check_stuck_videos_task():
+    """
+    Ищет видео, которые зависли в статусе processing/uploading
+    дольше допустимого времени (например, из-за рестарта сервера).
+    """
+    logger.info("Checking for stuck videos...")
+
+    timeout_hours = AppConfig.MAX_PROCESSING_TIMEOUT_HOURS
+    cutoff_time = datetime.now() - timedelta(hours=timeout_hours)
+
+    # Ищем видео, которые "зависли"
+    stuck_videos = Video.select().where(
+        Video.status.in_(['processing', 'uploading']) &
+        (Video.created_at < cutoff_time)
+    )
+
+    count = 0
+    affected_rooms = set()
+
+    for video in stuck_videos:
+        try:
+            logger.warning(f"Found stuck video {video.id} (Status: {video.status}, Created: {video.created_at})")
+
+            # 1. Помечаем как ошибку
+            video.status = 'error'
+            video.save()
+
+            # 2. Пытаемся удалить временный исходник, если он остался (хотя путь мы могли потерять)
+            # Если бы мы хранили путь к temp файлу в БД, мы бы его удалили тут.
+            # Но обычно ОС или Docker сами чистят /tmp при перезагрузке, или мы полагаемся на очистку при старте.
+
+            affected_rooms.add(str(video.room.uuid))
+            count += 1
+
+        except Exception as e:
+            logger.error(f"Error fixing stuck video {video.id}: {e}")
+
+        # Удаляем папки транскодинга старше таймаута
+        transcode_root = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode")
+        if os.path.exists(transcode_root):
+            for dirname in os.listdir(transcode_root):
+                dirpath = os.path.join(transcode_root, dirname)
+                if os.path.isdir(dirpath):
+                    # Проверяем время модификации папки
+                    try:
+                        mtime = datetime.fromtimestamp(os.path.getmtime(dirpath))
+                        if mtime < cutoff_time:
+                            logger.info(f"Removing stale transcode dir: {dirname}")
+                            shutil.rmtree(dirpath, ignore_errors=True)
+                    except Exception as e:
+                        logger.error(f"Error cleaning temp dir {dirname}: {e}")
+
+    # Уведомляем комнаты, чтобы у пользователей пропала вечная загрузка
+    for r_uuid in affected_rooms:
+        try:
+            celery_socketio.emit('playlist_refresh', {}, room=r_uuid)
+        except:
+            pass
+
+    if count > 0:
+        logger.info(f"Fixed {count} stuck videos.")
+

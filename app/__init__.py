@@ -7,13 +7,18 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from werkzeug.middleware.proxy_fix import ProxyFix
 from app.decorators import login_required, admin_required
-from config import AppConfig, StorageConfig
+from config import AppConfig, StorageConfig, RedisConfig
 from core.database import db
 from core.models import User, Room, Video
 
 # Инициализируем SocketIO (пока без логики, она будет позже)
 socketio = SocketIO(cors_allowed_origins="*")
 from app.sockets import ACTIVE_CONNECTIONS, ROOM_STATE
+
+socketio = SocketIO(
+    cors_allowed_origins="*",
+    message_queue=RedisConfig.URL
+)
 
 
 def create_app():
@@ -27,6 +32,7 @@ def create_app():
     # Регистрируем Blueprint с API
     from .routes import api
     app.register_blueprint(api)
+    socketio.init_app(app, async_mode='eventlet')
 
     # Инициализация SocketIO с приложением
     socketio.init_app(app)

@@ -31,6 +31,10 @@ app.conf.beat_schedule = {
         'task': 'tasks.media.cleanup_old_videos',
         'schedule': crontab(minute='*/10'), # Каждые 10 минут
     },
+    'check-stuck-every-hour': {
+        'task': 'tasks.media.check_stuck_videos',
+        'schedule': crontab(minute='*/10'),
+    },
 }
 
 # --- PEEWEE HOOKS ---
@@ -46,3 +50,5 @@ def celery_postrun(*args, **kwargs):
     """Закрываем соединение после выполнения задачи"""
     if not db.is_closed():
         db.close()
+
+        

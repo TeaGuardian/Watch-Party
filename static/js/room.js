@@ -11,6 +11,7 @@ let isPrivate = true;
 let isAllowedGuestControl = false;
 let currentVideoId = null;
 let lastSeenMap = {};
+let processingMap = {};
 
 // Флаг, чтобы отличать наше нажатие на паузу от серверного события
 let ignoreSyncEvents = false;
@@ -516,6 +517,11 @@ function initSocket() {
         updateViewerStatus(data);
     });
 
+    socket.on('processing_progress', (data) => {
+        // data: { video_id: 123, percent: 45 }
+        updateProcessingProgress(data.video_id, data.percent);
+    });
+
     socket.on('restore_state', (data) => {
         console.log("Restoring state:", data);
 
@@ -565,6 +571,18 @@ function initSocket() {
         console.log("🛑 Stop playback command received");
         resetPlayerState();
     });
+}
+
+function updateProcessingProgress(videoId, percent) {
+    processingMap[videoId] = percent;
+
+    const item = document.querySelector(`.video-item[data-id="${videoId}"]`);
+    if (!item) return;
+
+    const statusDiv = item.querySelector('.video-status div:first-child');
+    if (statusDiv) {
+        statusDiv.innerHTML = `<span style="color:orange; font-weight:bold;">⏳ Обработка: ${percent}%</span>`;
+    }
 }
 
 function resetPlayerState() {
@@ -844,11 +862,29 @@ function renderPlaylist(videos) {
         const itemClass = `video-item ${v.id === activeId ? 'active' : ''} ${!isReady ? 'disabled' : ''}`;
         const durationText = isReady ? formatDuration(v.duration) : '';
 
-        // Статусы
         let statusBadge = '';
-        if (v.status === 'processing') statusBadge = '<span style="color:orange">⏳ Обработка...</span>';
-        else if (v.status === 'uploading') statusBadge = '<span style="color:#3498db">⬆️ Загрузка...</span>';
-        else if (v.status === 'error') statusBadge = '<span style="color:red">❌ Ошибка</span>';
+
+        if (v.status === 'processing') {
+            const percent = processingMap[v.id];
+            if (percent !== undefined) {
+                statusBadge = `<span style="color:orange; font-weight:bold;">⏳ Обработка: ${percent}%</span>`;
+            } else {
+                statusBadge = '<span style="color:orange">⏳ Обработка...</span>';
+            }
+        }
+        else if (v.status === 'uploading') {
+            statusBadge = '<span style="color:#3498db">⬆️ Загрузка...</span>';
+            // Если видео перешло из processing в uploading (маловероятно, но всё же) или ready, чистим карту
+            delete processingMap[v.id];
+        }
+        else if (v.status === 'error') {
+            statusBadge = '<span style="color:red">❌ Ошибка</span>';
+            delete processingMap[v.id];
+        }
+        else if (v.status === 'ready') {
+            // Если стало ready - убираем из карты прогресса
+            delete processingMap[v.id];
+        }
 
         const safeTitle = v.title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
@@ -862,7 +898,6 @@ function renderPlaylist(videos) {
             </div>
         ` : '';
 
-        // [NEW] Расчет TTL (времени жизни)
         let ttlHtml = '';
         if (isReady && v.last_played_at) {
             ttlHtml = `<div class="ttl-timer" data-last-played="${v.last_played_at}"></div>`;
@@ -881,7 +916,7 @@ function renderPlaylist(videos) {
                         ${statusBadge || durationText}
                         ${v.size_mb ? `<span style="margin-left:5px; opacity:0.7;">(${v.size_mb} MB)</span>` : ''}
                     </div>
-                    ${ttlHtml} <!-- Таймер здесь -->
+                    ${ttlHtml}
                 </div>
             </div>
             ${controls}
@@ -889,7 +924,6 @@ function renderPlaylist(videos) {
         `;
     }).join('');
 
-    // Сразу обновляем таймеры после рендера
     updateTTLCounters();
 }
 

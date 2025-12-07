@@ -139,7 +139,6 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      # Воркеру нужен доступ к файлам для обработки видео
       - temp_uploads:/app/storage/uploads
     depends_on:
       - postgres
@@ -147,13 +146,15 @@ services:
       - minio
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # УБРАЛИ флаг --beat. Оставили только worker.
     command: celery -A tasks.celery_app worker --loglevel=info --pool=gevent --concurrency=10
     deploy:
       resources:
         limits:
-          cpus: '1'
-          memory: 800M
+          cpus: '2.0'
+          memory: 1500M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
   # --- 8. Celery Beat (Только планировщик) ---
   celery_beat:
