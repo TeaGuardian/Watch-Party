@@ -35,9 +35,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     setInterval(sendHeartbeat, 2000);
     setInterval(cleanupViewers, 5000);
     setInterval(() => {
-        console.log("🔄 Periodic room refresh (10 min)");
+        console.log("🔄 Periodic room refresh (5 min)");
         loadRoomData();
-    }, 10 * 60 * 1000);
+    }, 5 * 60 * 1000);
 });
 
 async function loadUserInfo() {
@@ -512,9 +512,29 @@ function initSocket() {
 
     // --- СТАТУСЫ УЧАСТНИКОВ ---
     socket.on('status_update', (data) => {
-        // data: { user_id, state, timestamp, avatar }
         if (data.sid === socket.id) return;
         updateViewerStatus(data);
+        if (!data.is_leader && !isOwner && !isAllowedGuestControl && !ignoreSyncEvents) {
+            // Если сервер уверен, что пауза, а мы играем - стоп.
+            if (data.server_paused && !player.paused) {
+                console.log("Soft Sync: Forcing Pause");
+                player.pause();
+            }
+            // Если сервер играет, а мы стоим - старт.
+            else if (!data.server_paused && player.paused) {
+                if (player.readyState >= 2) {
+                    console.log("Soft Sync: Forcing Play");
+                    player.play().catch(e => {});
+                }
+            }
+
+            const diff = Math.abs(player.currentTime - data.server_timestamp);
+
+            if (diff > 3.0 && !data.server_paused) {
+                console.log(`Soft Sync: Drift detected (${diff.toFixed(2)}s). Jumping to server time.`);
+                player.currentTime = data.server_timestamp;
+            }
+        }
     });
 
     socket.on('processing_progress', (data) => {
