@@ -1,9 +1,10 @@
 /* #/static/css/room.css */
+
 /* --- Layout --- */
 .room-container {
     display: flex;
     gap: 20px;
-    height: calc(100vh - 40px); /* Полный экран минус отступы */
+    height: calc(100vh - 40px);
     max-width: 1600px;
     margin: 0 auto;
 }
@@ -13,29 +14,298 @@
     flex: 3;
     display: flex;
     flex-direction: column;
-    min-width: 0; /* Fix flexbox overflow */
+    min-width: 0;
+    position: relative;
 }
 
-.video-wrapper {
+/* --- CUSTOM PLAYER WRAPPER --- */
+.player-wrapper {
     position: relative;
     background: black;
     width: 100%;
     aspect-ratio: 16/9;
     border-radius: 12px;
-    overflow: hidden;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    overflow: hidden; /* Важно, чтобы видео не вылезало */
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    user-select: none; /* Запрет выделения текста при кликах */
+}
+
+/* Скрываем курсор при бездействии */
+.player-wrapper.user-idle {
+    cursor: none;
 }
 
 video {
     width: 100%;
     height: 100%;
     outline: none;
+    display: block;
+    background: #000;
 }
 
+/* --- CONTROLS LAYER --- */
+.controls-layer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 0 10px 10px 10px;
+    box-sizing: border-box;
+    /* Градиентный фон для читаемости на любом видео */
+    background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.5) 50%, transparent 100%);
+
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    z-index: 20;
+}
+
+/* Скрываем контролы при бездействии */
+.player-wrapper.user-idle .controls-layer {
+    opacity: 0;
+    pointer-events: none; /* Чтобы не кликалось */
+}
+
+/* --- TIMELINE --- */
+.timeline-area {
+    position: relative;
+    width: 100%;
+    height: 16px; /* Область клика по высоте */
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+/* Линии таймлайна */
+.timeline-bg, .timeline-buffer, .timeline-current {
+    position: absolute;
+    left: 0;
+    height: 4px; /* Визуальная высота полоски */
+    border-radius: 2px;
+    transition: height 0.1s;
+}
+
+.timeline-area:hover .timeline-bg,
+.timeline-area:hover .timeline-buffer,
+.timeline-area:hover .timeline-current {
+    height: 6px; /* Утолщение при наведении */
+}
+
+.timeline-bg {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.timeline-buffer {
+    width: 0;
+    background: rgba(255, 255, 255, 0.4);
+    transition: width 0.2s linear;
+}
+
+.timeline-current {
+    width: 0;
+    background: var(--primary-color);
+    z-index: 2;
+}
+
+/* Ползунок (Scrubber) */
+.timeline-scrub {
+    position: absolute;
+    left: 0; /* JS ставит % */
+    width: 14px;
+    height: 14px;
+    background: white;
+    border-radius: 50%;
+    transform: translateX(-50%) scale(0); /* Скрыт по умолчанию */
+    transition: transform 0.1s;
+    z-index: 10;
+    box-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
+
+.timeline-area:hover .timeline-scrub {
+    transform: translateX(-50%) scale(1);
+}
+
+/* --- MARKERS (Визуализация юзеров) --- */
+.markers-layer {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; /* Маркеры не мешают клику по таймлайну */
+    z-index: 5;
+}
+
+.user-marker {
+    position: absolute;
+    top: 50%; /* Центр полоски */
+    transform: translate(-50%, -50%);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: white;
+    border: 2px solid transparent;
+    opacity: 0; /* Скрыты по умолчанию */
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: auto; /* Тултипы должны работать */
+    box-shadow: 0 0 3px rgba(0,0,0,0.5);
+}
+
+/* Цвета статусов для маркеров */
+.user-marker.status-green { background: #2ecc71; }
+.user-marker.status-yellow { background: #f1c40f; }
+.user-marker.status-red { background: #e74c3c; }
+.user-marker.status-gray { background: #95a5a6; border: 2px solid white; }
+
+/* Показываем маркеры только при наведении на ТАЙМЛАЙН */
+.timeline-area:hover .user-marker {
+    opacity: 1;
+}
+.user-marker:hover {
+    transform: translate(-50%, -50%) scale(1.5);
+    z-index: 20; /* Поверх соседей */
+}
+
+/* Тултип маркера */
+.marker-tooltip {
+    position: absolute;
+    bottom: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 20, 20, 0.9);
+    color: white;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.1s;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    text-align: center;
+    min-width: 100px;
+}
+
+.user-marker:hover .marker-tooltip {
+    opacity: 1;
+}
+
+.tt-names { font-weight: bold; margin-bottom: 2px; color: #eee; }
+.tt-info { color: #aaa; font-size: 10px; }
+.tt-delta { font-weight: bold; }
+.tt-delta.good { color: #2ecc71; }
+.tt-delta.bad { color: #e74c3c; }
+
+/* --- CONTROLS ROW --- */
+.controls-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 40px;
+}
+
+.controls-left, .controls-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.control-btn {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    padding: 4px;
+    opacity: 0.85;
+    transition: opacity 0.2s, transform 0.1s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.control-btn:hover {
+    opacity: 1;
+    transform: scale(1.1);
+}
+
+.control-btn svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
+}
+
+/* Volume Slider */
+.volume-container {
+    display: flex;
+    align-items: center;
+    position: relative;
+}
+.volume-slider {
+    width: 0;
+    opacity: 0;
+    transition: width 0.2s, opacity 0.2s;
+    cursor: pointer;
+    margin-left: 5px;
+}
+.volume-container:hover .volume-slider {
+    width: 70px;
+    opacity: 1;
+}
+
+/* Time Display */
+.time-display {
+    color: white;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+.time-separator { opacity: 0.6; }
+
+/* Delta Colors */
+.time-delta { font-size: 11px; font-weight: bold; }
+.delta-positive { color: #2ecc71; } /* Сервер впереди (нормально или догоняем) */
+.delta-negative { color: #e74c3c; } /* Мы убежали вперед */
+.delta-neutral { color: #ccc; }
+
+/* --- TOASTS IN PLAYER --- */
+.player-toasts {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none; /* Пропускаем клики */
+    z-index: 15;
+}
+
+.player-toast {
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 8px 15px;
+    border-radius: 20px;
+    font-size: 13px;
+    animation: fadeSlideIn 0.3s forwards;
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- VIDEO OVERLAY (Loading) --- */
 .video-overlay {
     position: absolute;
     top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.7);
+    background: black;
     color: white;
     display: flex;
     flex-direction: column;
@@ -43,7 +313,17 @@ video {
     justify-content: center;
     z-index: 10;
 }
+.spinner {
+    width: 40px; height: 40px;
+    border: 4px solid rgba(255,255,255,0.3);
+    border-top: 4px solid var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 10px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
+/* --- SIDEBAR & RESPONSIVE (Без изменений) --- */
 .room-info-bar {
     display: flex;
     align-items: center;
@@ -53,7 +333,6 @@ video {
     border-bottom: 1px solid var(--border-color);
     color: var(--text-main);
 }
-
 .btn-icon {
     color: var(--text-main);
     background-color: var(--bg-body);
@@ -61,48 +340,19 @@ video {
     cursor: pointer;
     font-size: 20px;
 }
-
-/* --- Viewers (Traffic Lights) --- */
-.viewers-section {
-    margin-top: 15px;
-}
-.viewers-section h4 { margin: 0 0 10px 0; font-size: 14px; color: #666; }
-
-.viewers-grid {
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-}
-
-.viewer-card {
-    position: relative;
-    width: 50px;
-    text-align: center;
-}
-
+.viewers-section { margin-top: 15px; }
+.viewers-grid { display: flex; gap: 15px; flex-wrap: wrap; }
+.viewer-card { width: 50px; text-align: center; cursor: pointer; }
 .viewer-avatar {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 3px solid #ccc; /* Default (Gray/Pause) */
-    transition: border-color 0.3s;
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 3px solid #ccc; transition: border-color 0.3s;
 }
+.status-green .viewer-avatar { border-color: #2ecc71; }
+.status-yellow .viewer-avatar { border-color: #f1c40f; }
+.status-red .viewer-avatar { border-color: #e74c3c; }
+.status-gray .viewer-avatar { border-color: #95a5a6; }
+.viewer-name { font-size: 10px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
 
-/* Индикаторы статуса */
-.status-green .viewer-avatar { border-color: #2ecc71; } /* OK */
-.status-yellow .viewer-avatar { border-color: #f1c40f; } /* Lag < 3s */
-.status-red .viewer-avatar { border-color: #e74c3c; }   /* Lag > 3s */
-.status-gray .viewer-avatar { border-color: #95a5a6; }  /* Paused */
-
-.viewer-name {
-    font-size: 10px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: block;
-}
-
-/* --- Sidebar (Right) --- */
 .sidebar-section {
     flex: 1;
     background: var(--bg-card);
@@ -115,7 +365,6 @@ video {
     max-height: 800px;
     overflow: hidden;
 }
-
 .sidebar-tabs {
     display: flex;
     border-bottom: 1px solid var(--border-color);

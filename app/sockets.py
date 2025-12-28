@@ -1,5 +1,4 @@
 # /app/sockets.py
-# /app/sockets.py
 import os
 import sys
 import time
@@ -14,17 +13,21 @@ from config import AppConfig
 from app import socketio
 from core.models import User, Room, Video, db, RoomAccess, RoomBan, DailyWatchStat
 
+# --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ---
+
 ROOM_STATE = {}
-SYNC_METRICS = {}
+SYNC_METRICS = {}  # Метрики качества соединения для выбора лидера
 
 ACTIVE_CONNECTIONS = {}
-SID_TIMINGS = {}
 SID_MAP = {}
+SID_TIMINGS = {}
 
-# Для аналитики (оставляем как было)
+# Для аналитики
 WATCH_SESSIONS = {}
 WATCH_BUFFER = {}
 
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def db_session(f):
     @wraps(f)
@@ -34,7 +37,7 @@ def db_session(f):
         try:
             return f(*args, **kwargs)
         except Exception as e:
-            print(f"Socket DB Error in {f.__name__}: {e}")
+            print(f"❌ Socket DB Error in {f.__name__}: {e}")
             raise e
         finally:
             if not db.is_closed():
@@ -44,13 +47,10 @@ def db_session(f):
 
 
 def flush_buffer_to_db(user_id):
-    """Сбрасывает накопленные секунды просмотра в БД"""
     if user_id not in WATCH_BUFFER or WATCH_BUFFER[user_id] <= 0:
         return
-
     seconds_to_add = WATCH_BUFFER[user_id]
     today = date.today()
-
     try:
         stat, created = DailyWatchStat.get_or_create(
             user_id=user_id,
@@ -60,42 +60,31 @@ def flush_buffer_to_db(user_id):
         query = DailyWatchStat.update(total_seconds=DailyWatchStat.total_seconds + seconds_to_add).where(
             DailyWatchStat.id == stat.id)
         query.execute()
-
-        # print(f"📈 Analytics: Saved {seconds_to_add}s for user {user_id}")
         WATCH_BUFFER[user_id] = 0
-
     except Exception as e:
         print(f"Error flushing stats: {e}")
 
 
 def track_connection_add(user_id, room_uuid, sid):
-    """Пытается добавить соединение"""
     if user_id not in ACTIVE_CONNECTIONS:
         ACTIVE_CONNECTIONS[user_id] = {}
-
     user_rooms = ACTIVE_CONNECTIONS[user_id]
-
     if room_uuid not in user_rooms:
         if len(user_rooms) >= AppConfig.MAX_OPENED_ROOMS:
             return False, "Limit of active rooms reached"
         user_rooms[room_uuid] = set()
-
     if len(user_rooms[room_uuid]) >= AppConfig.MAX_DUPLICATION:
         return False, "Limit of tabs for this room reached"
-
     user_rooms[room_uuid].add(sid)
     SID_MAP[sid] = (user_id, room_uuid)
     return True, None
 
 
 def track_connection_remove(sid):
-    """Удаляет соединение при разрыве"""
-    # Удаляем тайминг входа
-    if sid in SID_TIMINGS:
-        del SID_TIMINGS[sid]
+    if sid in SID_TIMINGS: del SID_TIMINGS[sid]
+    if sid in SYNC_METRICS: del SYNC_METRICS[sid]
 
     if sid not in SID_MAP: return
-
     user_id, room_uuid = SID_MAP.pop(sid)
 
     if user_id in ACTIVE_CONNECTIONS:
@@ -103,9 +92,15 @@ def track_connection_remove(sid):
             ACTIVE_CONNECTIONS[user_id][room_uuid].discard(sid)
             if not ACTIVE_CONNECTIONS[user_id][room_uuid]:
                 del ACTIVE_CONNECTIONS[user_id][room_uuid]
-
         if not ACTIVE_CONNECTIONS[user_id]:
             del ACTIVE_CONNECTIONS[user_id]
+
+
+def get_current_user():
+    user_id = session.get('user_id')
+    if not user_id:
+        return None
+    return User.get_or_none(User.id == user_id)
 
 
 def get_room_state_default(room_uuid):
@@ -121,18 +116,30 @@ def get_room_state_default(room_uuid):
     return ROOM_STATE[room_uuid]
 
 
+def format_seconds(seconds):
+    if seconds is None: return "00:00"
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def send_system_message(room_uuid, text):
+    emit('new_message', {
+        'username': 'System',
+        'text': text,
+        'is_system': True,
+        'time': datetime.now().strftime('%H:%M')
+    }, to=room_uuid)
+
+
+# --- АЛГОРИТМ ВЫБОРА ЛИДЕРА (SYNC) ---
+
 def elect_leader(room_uuid, room_obj):
-    """
-    Алгоритм выбора источника синхронизации (Лидера).
-    Вызывается при каждом хартбите.
-    """
     state = ROOM_STATE[room_uuid]
     now = time.time()
 
-    # 1. Получаем список всех SID в комнате
     try:
-        # socketio.server.manager.rooms returns { namespace: { room: { sid, ... } } }
-        # Но в новой версии python-socketio доступ может отличаться, используем безопасный метод:
+        # Получаем список SID в комнате через менеджер SocketIO
         room_participants = socketio.server.manager.rooms.get('/', {}).get(room_uuid, set())
     except:
         room_participants = set()
@@ -141,84 +148,60 @@ def elect_leader(room_uuid, room_obj):
         state['leader_sid'] = None
         return
 
-    # 2. Фильтрация кандидатов
     candidates = []
+    owner_online = (now - state.get('owner_last_seen', 0)) < 10.0
 
-    owner_online = (now - state.get('owner_last_seen', 0)) < 10.0  # Владелец был тут менее 10 сек назад
-
-    # Если "Управление гостями запрещено" -> Синхронимся ТОЛЬКО по владельцу
-    # (или админу, если владелец вышел, но тут для простоты - по владельцу)
-    strict_mode = not room_obj.allow_guest_control and not room_obj.owner_id is None  # owner_id check just in case
+    # Строгий режим: если владелец задал настройки
+    strict_mode = not room_obj.allow_guest_control and (room_obj.owner_id is not None)
 
     if strict_mode:
         if not owner_online:
-            # Владелец ушел более чем на 10 сек -> СТОП
+            # Если владельца нет, ставим паузу
             if not state['paused']:
                 state['paused'] = True
                 socketio.emit('sync_event', {'action': 'pause', 'timestamp': state['timestamp']}, to=room_uuid)
+                send_system_message(room_uuid, "Владелец отключился. Пауза.")
             state['leader_sid'] = None
             return
 
-        # Кандидаты - только сессии владельца
+        # Лидером может быть только владелец
         for sid in room_participants:
             info = SID_MAP.get(sid)
-            if info and info[0] == room_obj.owner_id:  # info[0] is user_id
+            if info and info[0] == room_obj.owner_id:
                 metrics = SYNC_METRICS.get(sid, {'streak': 0})
                 candidates.append({'sid': sid, 'score': metrics.get('streak', 0)})
-
     else:
-        # Свободный режим: кандидаты все, кто стабилен
+        # Демократия: лидером становится тот, у кого лучший коннект (streak)
         for sid in room_participants:
             metrics = SYNC_METRICS.get(sid)
             if not metrics: continue
+            if now - metrics['last_seen'] > 5.0: continue
 
-            # Пропускаем тех, кто давно не слал хартбит (более 5 сек - лаг или обрыв)
-            if now - metrics['last_seen'] > 5.0:
-                continue
-
-            # Критерий: смотрит > 20 сек (10 хартбитов по 2 сек) стабильно
             score = metrics['streak']
             user_id = SID_MAP.get(sid, (0, 0))[0]
-            is_owner = (user_id == room_obj.owner_id)
-
-            # Владелец получает бонус к скору, чтобы при прочих равных он был главным
-            if is_owner:
-                score += 50
+            if user_id == room_obj.owner_id: score += 50  # Бонус владельцу
 
             candidates.append({'sid': sid, 'score': score})
 
-    # 3. Выбор победителя
     if not candidates:
-        if not state['paused']:
-           state['paused'] = True
-           socketio.emit('sync_event', {'action': 'pause', 'timestamp': state['timestamp']}, to=room_uuid)
-        return  # Оставляем старого лидера или None
+        return
 
-    # Сортируем по скору убыванию
     candidates.sort(key=lambda x: x['score'], reverse=True)
-    best_candidate = candidates[0]
+    best = candidates[0]
+    current = state.get('leader_sid')
 
-    # Гистерезис: меняем лидера, только если новый кандидат сильно лучше старого (или старый умер)
-    current_leader = state.get('leader_sid')
+    # Анти-дребезг смены лидера (меняем только если новый кандидат явно лучше)
+    if current:
+        curr_stats = next((c for c in candidates if c['sid'] == current), None)
+        if curr_stats and curr_stats['score'] >= (best['score'] - 10):
+            return
 
-    # Если текущий лидер все еще в списке кандидатов и его скор неплох - оставляем его
-    # (чтобы не прыгало между двумя зрителями с хорошим инетом)
-    if current_leader:
-        current_leader_stats = next((c for c in candidates if c['sid'] == current_leader), None)
-        if current_leader_stats and current_leader_stats['score'] >= (best_candidate['score'] - 10):
-            return  # Оставляем старого
-
-    # Назначаем нового
-    if state['leader_sid'] != best_candidate['sid']:
-        state['leader_sid'] = best_candidate['sid']
+    if state['leader_sid'] != best['sid']:
+        state['leader_sid'] = best['sid']
+        # print(f"👑 New Leader in {room_uuid}: {best['sid']}")
 
 
-def get_current_user():
-    user_id = session.get('user_id')
-    if not user_id:
-        return None
-    return User.get_or_none(User.id == user_id)
-
+# --- SOCKET EVENTS ---
 
 @socketio.on('connect')
 @db_session
@@ -226,24 +209,24 @@ def on_connect(*args, **kwargs):
     user = get_current_user()
     if user:
         join_room(f"user_{user.id}")
+    # print(f"✅ Connect: {request.sid}")
 
 
 @socketio.on('disconnect')
 def on_disconnect():
-    sid = request.sid
-    if sid in SYNC_METRICS:
-        del SYNC_METRICS[sid]
-    track_connection_remove(sid)
+    track_connection_remove(request.sid)
 
 
 @socketio.on('join')
 @db_session
 def on_join(data):
-    """Вход пользователя"""
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))  # Force string! Важно!
     user = get_current_user()
 
-    if not user or not room_uuid: return
+    if not user:
+        emit('error', {'msg': 'Session lost. Please refresh.'})
+        return
+    if not room_uuid: return
 
     success, error_msg = track_connection_add(user.id, room_uuid, request.sid)
     if not success:
@@ -253,21 +236,17 @@ def on_join(data):
     try:
         room = Room.get(Room.uuid == room_uuid)
         if RoomBan.select().where((RoomBan.room == room) & (RoomBan.user == user)).exists():
-            emit('error', {'msg': 'Вы забанены в этой комнате'}, to=request.sid)
+            emit('error', {'msg': 'Вы забанены'}, to=request.sid)
             return
         if room.is_private and room.owner_id != user.id and user.role != 'admin':
-            has_access = RoomAccess.select().where(
-                (RoomAccess.room == room) & (RoomAccess.user == user)
-            ).exists()
-            if not has_access:
+            if not RoomAccess.select().where((RoomAccess.room == room) & (RoomAccess.user == user)).exists():
                 emit('error', {'msg': 'Доступ запрещен'}, to=request.sid)
                 return
-    except:
+    except Exception as e:
+        print(f"❌ Join Error: {e}")
         return
 
-    # Запоминаем время входа для алгоритма доверия
     SID_TIMINGS[request.sid] = datetime.now()
-
     join_room(room_uuid)
 
     emit('user_joined', {
@@ -284,8 +263,7 @@ def on_join(data):
             try:
                 vid = Video.get_by_id(state['video_id'])
                 d = vid.to_dict()
-                if d['url']:
-                    video_data = d
+                if d['url']: video_data = d
             except:
                 pass
 
@@ -299,169 +277,71 @@ def on_join(data):
 @socketio.on('leave')
 @db_session
 def on_leave(data):
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))
     user = get_current_user()
-
     if room_uuid and user:
-        # Аналитика: сохраняем при выходе
         flush_buffer_to_db(user.id)
-        if request.sid in WATCH_SESSIONS:
-            del WATCH_SESSIONS[request.sid]
-
+        if request.sid in WATCH_SESSIONS: del WATCH_SESSIONS[request.sid]
         leave_room(room_uuid)
-        emit('user_left', {
-            'user_id': user.id,
-            'sid': request.sid
-        }, to=room_uuid)
+        emit('user_left', {'user_id': user.id, 'sid': request.sid}, to=room_uuid)
 
-
-@socketio.on('sync_action')
-@db_session
-def on_sync_action(data):
-    """
-    Ручные действия (Play/Pause/Seek).
-    Они форсированно меняют стейт и делают отправителя временным лидером.
-    """
-    user = get_current_user()
-    room_uuid = data.get('room_uuid')
-    action = data.get('action')
-    val = data.get('timestamp')
-
-    if not user or not room_uuid: return
-
-    try:
-        room = Room.get(Room.uuid == room_uuid)
-
-        # Проверка прав (как и раньше)
-        is_owner = (room.owner_id == user.id)
-        if not is_owner and not room.allow_guest_control:
-            return
-
-        state = get_room_state_default(room_uuid)
-        now = time.time()
-
-        # Принудительно обновляем стейт
-        state['timestamp'] = float(val)
-        state['last_update'] = now
-
-        # При ручном действии этот юзер становится лидером (временный захват)
-        # Это предотвращает "борьбу" с текущим лидером
-        state['leader_sid'] = request.sid
-        if request.sid in SYNC_METRICS:
-            # Даем бонус стрика, чтобы он удержал лидерство какое-то время
-            SYNC_METRICS[request.sid]['streak'] += 20
-
-        if action == 'play':
-            state['paused'] = False
-            # Обновляем last_played_at в БД
-            if state.get('video_id'):
-                try:
-                    Video.update(last_played_at=datetime.now()).where(Video.id == state['video_id']).execute()
-                except:
-                    pass
-        elif action == 'pause':
-            state['paused'] = True
-            # Сброс аналитики
-            if request.sid in WATCH_SESSIONS:
-                flush_buffer_to_db(user.id)
-                del WATCH_SESSIONS[request.sid]
-        elif action == 'seek':
-            # При сике паузу не меняем, просто время
-            pass
-
-        # Рассылаем всем
-        emit('sync_event', {
-            'action': action,
-            'timestamp': val,
-            'actor': user.username
-        }, to=room_uuid, include_self=False)
-
-    except Exception as e:
-        print(f"Sync Action Error: {e}")
 
 @socketio.on('heartbeat')
 @db_session
 def on_heartbeat(data):
     user = get_current_user()
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))
     client_ts = float(data.get('timestamp', 0))
     client_state = data.get('state')
+    buffered = float(data.get('buffered', 0))
 
     if not user or not room_uuid: return
 
     sid = request.sid
     now = time.time()
-
     state = get_room_state_default(room_uuid)
 
-    # 1. Обновляем метрики владельца (глобально для комнаты)
     try:
         room = Room.get(Room.uuid == room_uuid)
     except:
         return
 
+    # 1. Метрики Владельца
     if user.id == room.owner_id:
         state['owner_last_seen'] = now
 
-    # 2. Обновляем личные метрики сокета
+    # 2. Метрики Сокета (Streak - качество синхронизации)
     if sid not in SYNC_METRICS:
-        SYNC_METRICS[sid] = {'streak': 0, 'last_seen': now, 'last_diff': 0}
+        SYNC_METRICS[sid] = {'streak': 0, 'last_seen': now}
 
     metric = SYNC_METRICS[sid]
     metric['last_seen'] = now
 
-    # Анализ стабильности (только если видео играет)
+    # Проверка "дрифта" времени для оценки качества клиента
     if client_state == 'playing' and not state['paused']:
-        # Разница между временем клиента и временем сервера (интерполированным)
-        # Время сервера двигается, поэтому сравниваем аккуратно
-
-        # Ожидаемое время на сервере: last_known_ts + (now - last_update)
-        # Но для оценки стабильности лучше сравнивать с ПРЕДЫДУЩИМ значением лидера, если он есть
-
-        # Упростим: Стабильность = клиент не скачет по времени.
-        # Если разница с серверным временем < 2 сек -> +1 к стрику
-        server_estimated_time = state['timestamp']
-        if not state['paused']:
-            server_estimated_time += (now - state['last_update'])
-
-        diff = abs(client_ts - server_estimated_time)
-
+        server_est = state['timestamp'] + (now - state['last_update'])
+        diff = abs(client_ts - server_est)
         if diff < 2.0:
-            # Бонус за длительный просмотр (кап в 600 поинтов = 20 минут)
             metric['streak'] = min(metric['streak'] + 1, 600)
         else:
-            # Сброс стрика при рассинхроне/сике
             metric['streak'] = 0
 
-    else:
-        # На паузе стрик не растет, но и не сбрасывается мгновенно (можно чуть уменьшать)
-        pass
-
-    # 3. Запускаем выборы лидера
+    # Выборы лидера
     elect_leader(room_uuid, room)
 
-    # 4. Если ЭТОТ клиент - Лидер, обновляем глобальное состояние комнаты
+    # Если мы лидер - обновляем глобальный стейт
     if state['leader_sid'] == sid:
-        # Лидер диктует правду
         state['timestamp'] = client_ts
         state['last_update'] = now
+        state['paused'] = (client_state == 'paused')
 
-        # Лидер диктует паузу (но не буферизацию - при буферизации лидера время просто стопается)
-        if client_state == 'paused':
-            state['paused'] = True
-        elif client_state == 'playing':
-            state['paused'] = False
-
-        # Если лидер буферится, мы не ставим глобальную паузу (чтобы другие не встали),
-        # но и таймстемп не двигаем.
-
-    # 5. Аналитика (Watch Time) - старый код
+    # Аналитика просмотра (Watch Time)
     if client_state == 'playing':
         if sid not in WATCH_SESSIONS:
             WATCH_SESSIONS[sid] = {'start_ts': now, 'last_ts': now}
         else:
             s_data = WATCH_SESSIONS[sid]
-            if (now - s_data['start_ts']) > 10:  # >10 сек непрерывно
+            if (now - s_data['start_ts']) > 10:
                 delta = now - s_data['last_ts']
                 if 0 < delta < 10:
                     if user.id not in WATCH_BUFFER: WATCH_BUFFER[user.id] = 0
@@ -473,71 +353,117 @@ def on_heartbeat(data):
             flush_buffer_to_db(user.id)
             del WATCH_SESSIONS[sid]
 
-    # 6. Отправляем ответ (Status Update) всем в комнате
-    # Важно: отправляем Server Estimated Time, чтобы клиенты подстраивались под Лидера
-
+    # Подготовка данных для отправки обратно (Server Truth)
     server_time_now = state['timestamp']
     if not state['paused'] and state['leader_sid']:
-        # Интерполяция: сколько прошло времени с момента получения данных от лидера
         server_time_now += (now - state['last_update'])
 
+    # ВОТ ЭТОГО НЕ БЫЛО В ВАШЕМ ФАЙЛЕ:
     emit('status_update', {
         'user_id': user.id,
         'username': user.username,
         'sid': request.sid,
         'state': client_state,
         'timestamp': client_ts,
+        'buffered': buffered,
         'avatar': user.to_dict()['avatar_url'],
+        # Критически важные поля для JS:
         'server_timestamp': server_time_now,
         'server_paused': state['paused'],
         'is_leader': (state['leader_sid'] == sid)
     }, to=room_uuid)
 
 
-@socketio.on('chat_message')
+@socketio.on('sync_action')
 @db_session
-def on_chat_message(data):
+def on_sync_action(data):
     user = get_current_user()
-    room_uuid = data.get('room_uuid')
-    message = data.get('message', '').strip()
+    room_uuid = str(data.get('room_uuid'))
+    action = data.get('action')
+    val = float(data.get('timestamp', 0))
 
-    if user and room_uuid and message:
-        emit('new_message', {
-            'user_id': user.id,
-            'username': user.username,
-            'text': message,
-            'time': 'now'
-        }, to=room_uuid)
+    if not user or not room_uuid: return
+
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        is_owner = (room.owner_id == user.id)
+        if not is_owner and not room.allow_guest_control: return
+
+        state = get_room_state_default(room_uuid)
+        now = time.time()
+
+        # Принудительное обновление стейта от инициатора действия
+        state['timestamp'] = val
+        state['last_update'] = now
+        state['leader_sid'] = request.sid
+
+        # Даем инициатору "бонус", чтобы лидерство не отскочило сразу
+        if request.sid in SYNC_METRICS:
+            SYNC_METRICS[request.sid]['streak'] += 20
+
+        sys_msg = ""
+        if action == 'play':
+            state['paused'] = False
+            sys_msg = f"{user.username} запустил видео"
+            if state.get('video_id'):
+                try:
+                    Video.update(last_played_at=datetime.now()).where(Video.id == state['video_id']).execute()
+                except:
+                    pass
+        elif action == 'pause':
+            state['paused'] = True
+            sys_msg = f"{user.username} поставил на паузу"
+            if request.sid in WATCH_SESSIONS:
+                flush_buffer_to_db(user.id)
+                del WATCH_SESSIONS[request.sid]
+        elif action == 'seek':
+            sys_msg = f"{user.username} перемотал на {format_seconds(val)}"
+
+        emit('sync_event', {
+            'action': action,
+            'timestamp': val,
+            'actor': user.username
+        }, to=room_uuid, include_self=False)
+
+        if sys_msg:
+            send_system_message(room_uuid, sys_msg)
+
+    except Exception as e:
+        print(f"Sync error: {e}")
 
 
 @socketio.on('change_video')
 @db_session
 def on_change_video(data):
     user = get_current_user()
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))
     video_id = data.get('video_id')
+
+    print(f"➡️ Change Video Request: Room {room_uuid}, Vid {video_id} by {user.username if user else '?'}")
+    print(f"DEBUG: Change Video Called! Data: {data}")
 
     if not user or not room_uuid: return
 
     try:
         room = Room.get(Room.uuid == room_uuid)
         if room.owner_id != user.id and not room.allow_guest_control:
+            emit('error', {'msg': 'Нет прав'}, to=request.sid)
             return
 
         video = Video.get_by_id(video_id)
         video.last_played_at = datetime.now()
         video.save()
-
         v_data = video.to_dict()
 
         if not v_data['url']:
-            emit('error', {'msg': 'Видео не готово'}, to=request.sid)
+            emit('error', {'msg': 'Видео не готово или обрабатывается'}, to=request.sid)
             return
 
-        if room_uuid not in ROOM_STATE: ROOM_STATE[room_uuid] = {}
-        ROOM_STATE[room_uuid]['video_id'] = video.id
-        ROOM_STATE[room_uuid]['timestamp'] = 0
-        ROOM_STATE[room_uuid]['paused'] = True
+        state = get_room_state_default(room_uuid)
+        state['video_id'] = video.id
+        state['timestamp'] = 0
+        state['paused'] = True
+        state['leader_sid'] = request.sid  # Делаем инициатора лидером
 
         emit('load_video', {
             'url': v_data['url'],
@@ -545,18 +471,35 @@ def on_change_video(data):
             'video_id': video.id
         }, to=room_uuid)
 
+        send_system_message(room_uuid, f"{user.username} включил: {v_data['title']}")
+
     except Exception as e:
-        print(f"Change video error: {e}")
+        print(f"❌ Change video exception: {e}")
+        emit('error', {'msg': 'Ошибка при смене видео'}, to=request.sid)
+
+
+@socketio.on('chat_message')
+@db_session
+def on_chat_message(data):
+    user = get_current_user()
+    room_uuid = str(data.get('room_uuid'))
+    message = data.get('message', '').strip()
+    if user and room_uuid and message:
+        emit('new_message', {
+            'user_id': user.id,
+            'username': user.username,
+            'text': message,
+            'time': datetime.now().strftime('%H:%M'),
+            'is_system': False
+        }, to=room_uuid)
 
 
 @socketio.on('knock_knock')
 @db_session
 def on_knock(data):
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))
     user = get_current_user()
-
     if not user or not room_uuid: return
-
     try:
         room = Room.get(Room.uuid == room_uuid)
         emit('incoming_knock', {
@@ -565,9 +508,8 @@ def on_knock(data):
             'room_uuid': room_uuid,
             'avatar': user.to_dict()['avatar_url']
         }, to=f"user_{room.owner_id}")
-
-    except Exception as e:
-        print(f"Knock error: {e}")
+    except:
+        pass
 
 
 @socketio.on('decide_knock')
@@ -575,21 +517,17 @@ def on_knock(data):
 def on_decide_knock(data):
     owner = get_current_user()
     target_user_id = data.get('target_user_id')
-    room_uuid = data.get('room_uuid')
+    room_uuid = str(data.get('room_uuid'))
     decision = data.get('decision')
-
     if not owner or not target_user_id: return
-
     try:
         room = Room.get(Room.uuid == room_uuid)
         if room.owner_id != owner.id: return
-
         if decision == 'approve':
             target_user = User.get_by_id(target_user_id)
             RoomAccess.get_or_create(room=room, user=target_user)
             emit('access_granted', {'room_uuid': room_uuid}, to=f"user_{target_user_id}")
         else:
             emit('access_denied', {'reason': 'Владелец отклонил запрос'}, to=f"user_{target_user_id}")
-
-    except Exception as e:
-        print(f"Decide error: {e}")
+    except:
+        pass

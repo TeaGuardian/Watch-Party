@@ -1,5 +1,5 @@
-#/app/__init__.py
-from flask import Flask, render_template, send_from_directory, redirect, session, request
+# /app/__init__.py
+from flask import Flask, render_template, send_from_directory, redirect, session, request, url_for
 from flask_socketio import SocketIO
 import sys
 import os
@@ -11,15 +11,16 @@ from config import AppConfig, StorageConfig, RedisConfig
 from core.database import db
 from core.models import User, Room, Video
 
-# Инициализируем SocketIO (пока без логики, она будет позже)
-socketio = SocketIO(cors_allowed_origins="*")
-from app.sockets import ACTIVE_CONNECTIONS, ROOM_STATE
-
+# --- ИСПРАВЛЕНИЕ: Инициализация SocketIO только один раз ---
 socketio = SocketIO(
     cors_allowed_origins="*",
-    message_queue=RedisConfig.URL
+    message_queue=RedisConfig.URL,
+    manage_session=True # Важно для работы сессий
 )
 
+# Импортируем логику сокетов ПОСЛЕ создания объекта socketio
+from app import sockets
+from app.sockets import ACTIVE_CONNECTIONS, ROOM_STATE
 
 def create_app():
     app = Flask(__name__,
