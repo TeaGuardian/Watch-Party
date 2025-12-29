@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from minio import Minio
 from minio.error import S3Error
-# [FIX] Добавляем импорт для корректного удаления
+from datetime import datetime, timezone
 from minio.deleteobjects import DeleteObject
 
 import sys
@@ -37,6 +37,16 @@ class BaseStorageManager(ABC):
 
     @abstractmethod
     def get_url(self, path: str) -> str:
+        pass
+
+    @abstractmethod
+    def list_subfolders(self, prefix: str) -> list[str]:
+        """Возвращает список имен подпапок в указанном пути"""
+        pass
+
+    @abstractmethod
+    def get_folder_last_modified(self, folder_path: str) -> datetime | None:
+        """Возвращает дату модификации самого свежего файла в папке"""
         pass
 
 
@@ -97,6 +107,34 @@ class LocalStorageManager(BaseStorageManager):
 
     def get_url(self, path: str) -> str:
         return f"/content/{path}"
+
+    def list_subfolders(self, prefix: str) -> list[str]:
+        full_path = self._full_path(prefix)
+        if not os.path.exists(full_path):
+            return []
+        # Получаем только директории
+        return [
+            name for name in os.listdir(full_path)
+            if os.path.isdir(os.path.join(full_path, name))
+        ]
+
+    def get_folder_last_modified(self, folder_path: str) -> datetime | None:
+        full_path = self._full_path(folder_path)
+        if not os.path.exists(full_path):
+            return None
+
+        latest_time = 0.0
+        # Рекурсивно ищем самый свежий файл
+        for root, _, files in os.walk(full_path):
+            for file in files:
+                mtime = os.path.getmtime(os.path.join(root, file))
+                if mtime > latest_time:
+                    latest_time = mtime
+
+        if latest_time == 0.0:
+            return None
+
+        return datetime.fromtimestamp(latest_time, tz=timezone.utc)
 
 
 class MinioStorageManager(BaseStorageManager):
@@ -196,6 +234,46 @@ class MinioStorageManager(BaseStorageManager):
         Nginx перенаправит /s3/... -> MinIO container
         """
         return f"/s3/{self.bucket}/{path}"
+
+    def list_subfolders(self, prefix: str) -> list[str]:
+        if not prefix.endswith('/'):
+            prefix += '/'
+
+        results = []
+        try:
+            # recursive=False заставляет S3 группировать файлы по префиксам (папкам)
+            objects = self.client.list_objects(self.bucket, prefix=prefix, recursive=False)
+            for obj in objects:
+                if obj.is_dir:
+                    # object_name вернет "shared_content/hash_123/"
+                    # Нам нужно вычленить "hash_123"
+                    # Убираем префикс родителя и слеш в конце
+                    clean_name = obj.object_name[len(prefix):].strip('/')
+                    results.append(clean_name)
+        except Exception as e:
+            logger.error(f"S3 list_subfolders error: {e}")
+
+        return results
+
+    def get_folder_last_modified(self, folder_path: str) -> datetime | None:
+        if not folder_path.endswith('/'):
+            folder_path += '/'
+
+        try:
+            # Берем список файлов, чтобы найти самый свежий
+            # (Можно ограничить limit, если папки огромные, но для точности лучше проверить все)
+            objects = self.client.list_objects(self.bucket, prefix=folder_path, recursive=True)
+
+            last_modified = None
+
+            for obj in objects:
+                if not last_modified or obj.last_modified > last_modified:
+                    last_modified = obj.last_modified
+
+            return last_modified
+        except Exception as e:
+            logger.error(f"S3 get_last_modified error: {e}")
+            return None
 
 
 if StorageConfig.USE_S3:

@@ -20,14 +20,63 @@ async function loadStats() {
         const res = await fetch('/api/admin/stats');
         const data = await res.json();
 
+        // Основные карточки
         document.getElementById('stat-users').textContent = data.users_total;
         document.getElementById('stat-new').textContent = data.users_new;
         document.getElementById('stat-rooms').textContent = data.rooms_total;
-        document.getElementById('stat-videos').textContent = data.videos_total;
-
-        // Новые метрики
         document.getElementById('stat-hours').textContent = data.total_watch_hours;
-        document.getElementById('stat-storage').textContent = data.storage_used_gb;
+
+        // --- ДИСК ---
+        const disk = data.disk_info;
+        if (disk) {
+            document.getElementById('disk-used').textContent = disk.used_gb + ' GB';
+            document.getElementById('disk-total').textContent = disk.total_gb + ' GB';
+            document.getElementById('disk-percent').textContent = disk.percent + '%';
+
+            const bar = document.getElementById('disk-bar');
+            bar.style.width = `${disk.percent}%`;
+
+            // Красим бар в красный, если места мало (>90%)
+            if (disk.percent > 90) bar.style.background = '#e74c3c';
+            else if (disk.percent > 70) bar.style.background = '#f1c40f';
+            else bar.style.background = '#3498db';
+        }
+        // Показываем, сколько именно наши видео занимают из всего диска
+        document.getElementById('stat-storage-db').textContent = data.storage_used_gb + ' GB';
+
+        // --- ВИДЕО ПАЙПЛАЙН ---
+        const vStats = data.video_stats;
+        if (vStats) {
+            document.getElementById('stat-videos-total').textContent = data.videos_total;
+            document.getElementById('vid-ready').textContent = vStats.ready;
+
+            // Суммируем processing и uploading
+            const pending = (vStats.processing || 0) + (vStats.uploading || 0);
+            document.getElementById('vid-processing').textContent = pending;
+
+            // Подсветка, если есть ошибки или зависшие процессы
+            const errEl = document.getElementById('vid-error');
+            errEl.textContent = vStats.error;
+            if (vStats.error > 0) errEl.style.fontWeight = 'bold';
+
+            if (pending > 0) {
+                 document.getElementById('vid-processing').style.color = '#d35400';
+                 document.getElementById('vid-processing').textContent += ' 🔥';
+            }
+        }
+
+        // --- SYSTEM LOAD ---
+        const load = data.system_load;
+        if (load) {
+            document.getElementById('load-1').textContent = load[0];
+            document.getElementById('load-5').textContent = load[1];
+            document.getElementById('load-15').textContent = load[2];
+
+            // Простая индикация перегрузки (если Load Avg > 1.0 на ядро, но мы не знаем кол-во ядер,
+            // просто подсветим высокие значения > 2 как warning)
+            if (load[0] > 2.0) document.getElementById('load-1').style.color = '#e74c3c';
+        }
+
     } catch(e) { console.error(e); }
 }
 

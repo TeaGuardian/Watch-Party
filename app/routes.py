@@ -5,6 +5,7 @@ import re
 import secrets
 import string
 import time
+import shutil
 import random
 from datetime import datetime, timedelta  # [NEW] Нужно для графиков
 
@@ -940,17 +941,43 @@ def get_admin_stats(current_user):
     """Статистика для дашборда (Кэш 5 минут)"""
     cache_key = "admin_global_stats"
 
-    # 1. Проверяем кэш
+    # Сбрасывайте кэш при разработке, или уменьшите ttl
     cached_data = get_cache(cache_key)
     if cached_data:
         return jsonify(json.loads(cached_data))
 
-    # 2. Считаем (Тяжелые операции)
+    # 1. Базовая статистика (как было)
     total_seconds = DailyWatchStat.select(fn.SUM(DailyWatchStat.total_seconds)).scalar() or 0
     total_hours = float(round(total_seconds / 3600, 1))
 
+    # 2. Статистика хранилища (S3 или Local)
+    # Считаем объем файлов в БД
     total_storage_bytes = Video.select(fn.SUM(Video.file_size)).scalar() or 0
     total_storage_gb = float(round(total_storage_bytes / (1024 ** 3), 2))
+
+    # Получаем реальное место на диске (внутри контейнера/сервера)
+    # Если используете S3, это покажет место на диске сервера, где лежат temp файлы
+    total, used, free = shutil.disk_usage("/")
+    disk_info = {
+        'total_gb': round(total / (1024**3), 1),
+        'used_gb': round(used / (1024**3), 1),
+        'free_gb': round(free / (1024**3), 1),
+        'percent': round((used / total) * 100, 1)
+    }
+
+    # 3. Статусы видео (Важно для мониторинга застреваний)
+    video_stats = {
+        'ready': Video.select().where(Video.status == 'ready').count(),
+        'processing': Video.select().where(Video.status == 'processing').count(),
+        'uploading': Video.select().where(Video.status == 'uploading').count(),
+        'error': Video.select().where(Video.status == 'error').count()
+    }
+
+    # 4. Нагрузка системы (Load Average) - работает на Linux/Mac
+    try:
+        load_1, load_5, load_15 = os.getloadavg()
+    except:
+        load_1, load_5, load_15 = 0, 0, 0
 
     stats = {
         'users_total': User.select().count(),
@@ -958,11 +985,14 @@ def get_admin_stats(current_user):
         'rooms_total': Room.select().count(),
         'videos_total': Video.select().count(),
         'total_watch_hours': total_hours,
-        'storage_used_gb': total_storage_gb
+        'storage_used_gb': total_storage_gb,
+        # Новые данные
+        'disk_info': disk_info,
+        'video_stats': video_stats,
+        'system_load': [round(load_1, 2), round(load_5, 2), round(load_15, 2)]
     }
 
-    # 3. Сохраняем в кэш на 300 сек (5 мин)
-    set_cache(cache_key, json.dumps(stats), ttl=300)
+    set_cache(cache_key, json.dumps(stats), ttl=120) # Уменьшил TTL до 60 сек для админки
 
     return jsonify(stats)
 

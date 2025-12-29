@@ -25,7 +25,7 @@ app.conf.update(
 # Автоматический поиск задач в модулях
 app.conf.imports = ['tasks.media']
 
-# [NEW] Расписание периодических задач
+# Расписание периодических задач
 app.conf.beat_schedule = {
     'cleanup-every-10-minutes': {
         'task': 'tasks.media.cleanup_old_videos',
@@ -34,6 +34,10 @@ app.conf.beat_schedule = {
     'check-stuck-every-hour': {
         'task': 'tasks.media.check_stuck_videos',
         'schedule': crontab(minute='*/10'),
+    },
+    'global-s3-gc-daily': {
+        'task': 'tasks.media.daily_s3_garbage_collector',
+        'schedule': crontab(hour=4, minute=0),
     },
 }
 

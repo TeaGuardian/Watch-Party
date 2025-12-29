@@ -5,7 +5,7 @@ import subprocess
 import logging
 import requests
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from tasks.celery_app import app
 from core.models import Video, Room
@@ -409,3 +409,57 @@ def check_stuck_videos_task():
     if count > 0:
         logger.info(f"Fixed {count} stuck videos.")
 
+
+@app.task(name='tasks.media.daily_s3_garbage_collector')
+def daily_s3_garbage_collector():
+    """
+    Раз в сутки сверяем папки в shared_content с БД.
+    Удаляем те, что не привязаны ни к одному видео и старше 24 часов.
+    """
+    logger.info("🧹 STARTING S3 GARBAGE COLLECTOR")
+    root_prefix = AppConfig.SHARED_CONTENT_PATH
+
+    # 1. Получаем список всех папок (хешей) из S3
+    s3_folders = storage.list_subfolders(root_prefix)
+    if not s3_folders:
+        logger.info("S3 is empty or unreachable. Skipping.")
+        return
+
+    logger.info(f"Found {len(s3_folders)} folders in S3.")
+
+    # 2. Получаем список всех активных хешей из БД
+    db_hashes_query = Video.select(Video.file_hash).where(Video.file_hash.is_null(False)).distinct()
+    db_hashes = {v.file_hash for v in db_hashes_query}
+
+    logger.info(f"Found {len(db_hashes)} active hashes in DB.")
+
+    deleted_count = 0
+    skipped_fresh = 0
+
+    # 3. Ищем сирот
+    for folder_hash in s3_folders:
+        if folder_hash not in db_hashes:
+            full_path = f"{root_prefix}/{folder_hash}/"
+
+            # 4. SAFETY CHECK: Когда папку трогали последний раз?
+            last_modified = storage.get_folder_last_modified(full_path)
+
+            if last_modified:
+                # Временная метка "24 часа назад" (с учетом таймзоны UTC, т.к. S3 возвращает UTC)
+                cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+
+                if last_modified < cutoff_time:
+                    logger.warning(f"🗑️ ORPHAN FOUND: {folder_hash} (Last modified: {last_modified}). Deleting...")
+                    if storage.delete_folder(full_path):
+                        deleted_count += 1
+                else:
+                    # Папка "свежая", возможно прямо сейчас идет загрузка, а запись в БД создалась/удалилась асинхронно
+                    logger.info(f"🛡️ Skipping fresh orphan: {folder_hash} (Modified: {last_modified})")
+                    skipped_fresh += 1
+            else:
+                # Папка пустая или ошибка доступа — можно попытаться удалить
+                logger.info(f"🗑️ Deleting empty/inaccessible orphan: {folder_hash}")
+                if storage.delete_folder(full_path):
+                    deleted_count += 1
+
+    logger.info(f"🧹 GC FINISHED. Deleted: {deleted_count}, Skipped (fresh): {skipped_fresh}")

@@ -21,6 +21,8 @@
         <!-- SECTION: DASHBOARD -->
         <div id="section-dashboard" class="admin-section active">
             <h2>Обзор системы</h2>
+
+            <!-- 1. Основные метрики (Как было + System Load) -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <h3>Пользователей</h3>
@@ -31,22 +33,96 @@
                     <p id="stat-new">-</p>
                 </div>
                 <div class="stat-card">
-                    <h3>Всего комнат</h3>
+                    <h3>Комнат</h3>
                     <p id="stat-rooms">-</p>
                 </div>
-                <div class="stat-card">
-                    <h3>Видео файлов</h3>
-                    <p id="stat-videos">-</p>
-                </div>
-                <!-- Новые карточки -->
                 <div class="stat-card success">
                     <h3>Насмотрено (Часов)</h3>
                     <p id="stat-hours">-</p>
                 </div>
-                <div class="stat-card info">
-                    <h3>Занято места (GB)</h3>
-                    <p id="stat-storage">-</p>
+            </div>
+
+            <!-- 2. Блок "Здоровье системы" (Новый) -->
+            <h3 style="margin-top: 30px; color: #7f8c8d;">Техническое состояние</h3>
+            <div class="dashboard-panels">
+
+                <!-- Панель Диска -->
+                <div class="panel-card">
+                    <div class="panel-header">
+                        <h4>💿 Серверное хранилище</h4>
+                        <span id="disk-percent" class="badge">-</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="progress-bar-bg">
+                            <div id="disk-bar" class="progress-bar-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="panel-stats-row">
+                            <div>
+                                <span class="label">Занято</span>
+                                <strong id="disk-used">- GB</strong>
+                            </div>
+                            <div>
+                                <span class="label">Всего</span>
+                                <strong id="disk-total">- GB</strong>
+                            </div>
+                            <div>
+                                <span class="label">Медиа БД</span>
+                                <strong id="stat-storage-db" style="color:#3498db">- GB</strong>
+                            </div>
+                        </div>
+                    </div>
                 </div>
+
+                <!-- Панель Видео пайплайна -->
+                <div class="panel-card">
+                    <div class="panel-header">
+                        <h4>🎬 Видео пайплайн</h4>
+                        <span id="stat-videos-total" class="badge bg-secondary">- всего</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="status-list">
+                            <div class="status-item">
+                                <span class="dot dot-success"></span>
+                                <span>Готовы</span>
+                                <strong id="vid-ready" style="margin-left:auto">-</strong>
+                            </div>
+                            <div class="status-item">
+                                <span class="dot dot-warning"></span>
+                                <span>Обработка / Загрузка</span>
+                                <strong id="vid-processing" style="margin-left:auto">-</strong>
+                            </div>
+                            <div class="status-item">
+                                <span class="dot dot-danger"></span>
+                                <span>Ошибки</span>
+                                <strong id="vid-error" style="margin-left:auto; color:red">-</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Панель Системной нагрузки -->
+                <div class="panel-card">
+                    <div class="panel-header">
+                        <h4>⚙️ Нагрузка (Load Avg)</h4>
+                    </div>
+                    <div class="panel-body centered-content">
+                        <div class="load-metrics">
+                            <div class="load-box">
+                                <span class="load-val" id="load-1">-</span>
+                                <span class="load-lbl">1 мин</span>
+                            </div>
+                            <div class="load-box">
+                                <span class="load-val" id="load-5">-</span>
+                                <span class="load-lbl">5 мин</span>
+                            </div>
+                            <div class="load-box">
+                                <span class="load-val" id="load-15">-</span>
+                                <span class="load-lbl">15 мин</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
