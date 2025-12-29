@@ -44,6 +44,47 @@ def calculate_file_hash(file_stream):
     return sha256_hash.hexdigest()
 
 
+@api.route('/internal/progress', methods=['POST'])
+def internal_progress_hook():
+    """
+    Этот роут вызывает Celery, чтобы уведомить Flask о прогрессе.
+    Flask затем пушит это в сокеты.
+    """
+    # Простая защита: проверяем, что запрос пришел из локальной сети или с правильным ключом
+    # (для простоты можно проверить, что sender - это доверенный сервис,
+    # но в рамках docker сети это обычно безопасно)
+
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data'}), 400
+
+    video_id = data.get('video_id')
+    percent = data.get('percent')
+    room_uuid = data.get('room_uuid')
+
+    if video_id is not None and percent is not None and room_uuid:
+        # Отправляем в сокеты (Flask делает это локально, клиенты это увидят)
+        socketio.emit('processing_progress', {
+            'video_id': video_id,
+            'percent': percent
+        }, to=str(room_uuid))
+
+        return jsonify({'status': 'ok'})
+
+    return jsonify({'error': 'Invalid data'}), 400
+
+
+@api.route('/internal/refresh', methods=['POST'])
+def internal_refresh_hook():
+    """Роут для обновления плейлиста по завершению"""
+    data = request.json
+    room_uuid = data.get('room_uuid')
+    if room_uuid:
+        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+        return jsonify({'status': 'ok'})
+    return jsonify({'error': 'No room_uuid'}), 400
+
+
 # --- AUTH ---
 
 @api.route('/captcha', methods=['GET'])

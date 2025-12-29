@@ -126,6 +126,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:8000 main:app
+    environment:
+      - PYTHONUNBUFFERED=1
     deploy:
       resources:
         limits:

@@ -7,7 +7,7 @@ from functools import wraps
 
 from flask import session, request
 from flask_socketio import emit, join_room, leave_room
-
+print("🔥 SOCKETS.PY IMPORTED SUCCESSFULLY 🔥", flush=True)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import AppConfig
 from app import socketio
@@ -435,35 +435,43 @@ def on_sync_action(data):
 @socketio.on('change_video')
 @db_session
 def on_change_video(data):
+    # 1. Сразу печатаем, что событие пришло
+    print(f"🔍 EVENT: change_video received. Data: {data}", flush=True)
+
     user = get_current_user()
     room_uuid = str(data.get('room_uuid'))
+
+    # 2. Печатаем, кого мы нашли
+    print(f"👤 USER: {user} (ID: {user.id if user else 'None'}), ROOM: {room_uuid}", flush=True)
+
+    if not user or not room_uuid:
+        # 3. Печатаем, почему мы выходим
+        print("❌ ABORT: No user or no room_uuid!", flush=True)
+        # Отправляем ошибку клиенту, чтобы увидеть её в консоли браузера
+        emit('error', {'msg': 'Auth failed or Room missing'}, to=request.sid)
+        return
+
     video_id = data.get('video_id')
-
-    print(f"➡️ Change Video Request: Room {room_uuid}, Vid {video_id} by {user.username if user else '?'}")
-    print(f"DEBUG: Change Video Called! Data: {data}")
-
-    if not user or not room_uuid: return
 
     try:
         room = Room.get(Room.uuid == room_uuid)
         if room.owner_id != user.id and not room.allow_guest_control:
-            emit('error', {'msg': 'Нет прав'}, to=request.sid)
             return
 
         video = Video.get_by_id(video_id)
         video.last_played_at = datetime.now()
         video.save()
+
         v_data = video.to_dict()
 
         if not v_data['url']:
-            emit('error', {'msg': 'Видео не готово или обрабатывается'}, to=request.sid)
+            emit('error', {'msg': 'Видео не готово'}, to=request.sid)
             return
 
-        state = get_room_state_default(room_uuid)
-        state['video_id'] = video.id
-        state['timestamp'] = 0
-        state['paused'] = True
-        state['leader_sid'] = request.sid  # Делаем инициатора лидером
+        if room_uuid not in ROOM_STATE: ROOM_STATE[room_uuid] = {}
+        ROOM_STATE[room_uuid]['video_id'] = video.id
+        ROOM_STATE[room_uuid]['timestamp'] = 0
+        ROOM_STATE[room_uuid]['paused'] = True
 
         emit('load_video', {
             'url': v_data['url'],
@@ -471,11 +479,8 @@ def on_change_video(data):
             'video_id': video.id
         }, to=room_uuid)
 
-        send_system_message(room_uuid, f"{user.username} включил: {v_data['title']}")
-
     except Exception as e:
-        print(f"❌ Change video exception: {e}")
-        emit('error', {'msg': 'Ошибка при смене видео'}, to=request.sid)
+        print(f"Change video error: {e}")
 
 
 @socketio.on('chat_message')

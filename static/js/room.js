@@ -11,6 +11,7 @@ let isOwner = false;
 let isPrivate = true;
 let isAllowedGuestControl = false;
 let currentVideoId = null;
+let isDraggingScrubber = false; // Флаг: перетягивает ли пользователь ползунок прямо сейчас
 
 // UI Elements References
 const ui = {
@@ -23,6 +24,7 @@ const ui = {
     timeDuration: null,
     timeDelta: null,
     timeline: null,
+    scrub: null,
     progress: null,
     buffer: null,
     markers: null,
@@ -47,21 +49,12 @@ let isPlayPending = false; // Защита от AbortError
 document.addEventListener('DOMContentLoaded', async () => {
     console.log("🚀 Room JS Initializing...");
     player = document.getElementById('video-player');
-
-    // Инициализация ссылок на UI
     initUIReferences();
-
-    // Настройка кастомного плеера
     setupCustomPlayer();
-
-    // Загрузка данных
     await loadUserInfo();
     await loadRoomData();
-
-    // Сокеты
     initSocket();
 
-    // Периодические задачи
     setInterval(sendHeartbeat, 2000);
     setInterval(cleanupViewers, 5000);
     setInterval(updateTTLCounters, 60000); // Таймеры удаления
@@ -80,6 +73,7 @@ function initUIReferences() {
     ui.timeDuration = document.getElementById('time-duration');
     ui.timeDelta = document.getElementById('time-delta');
     ui.timeline = document.getElementById('timeline-area');
+    ui.scrub = document.getElementById('timeline-scrub');
     ui.progress = document.getElementById('progress-current');
     ui.buffer = document.getElementById('progress-buffer');
     ui.markers = document.getElementById('markers-layer');
@@ -174,13 +168,76 @@ async function loadRoomData() {
 }
 
 
+/* --- Timeline Scrubbing Logic --- */
+
+function startScrubDrag(e) {
+    isDraggingScrubber = true;
+
+    // Сразу обновляем визуально в точку клика
+    handleScrubMove(e);
+
+    // Вешаем слушатели на document, чтобы можно было уводить мышь за пределы плеера
+    document.addEventListener('mousemove', handleScrubMove);
+    document.addEventListener('mouseup', stopScrubDrag);
+}
+
+function handleScrubMove(e) {
+    if (!isDraggingScrubber) return;
+
+    const rect = ui.timeline.getBoundingClientRect();
+    // Вычисляем позицию мыши относительно таймлайна (0..1)
+    let pos = (e.clientX - rect.left) / rect.width;
+
+    // Ограничиваем в пределах [0, 1]
+    pos = Math.max(0, Math.min(1, pos));
+
+    // Визуальное обновление (без перемотки видео!)
+    const pct = pos * 100;
+    ui.progress.style.width = `${pct}%`;
+    ui.scrub.style.left = `${pct}%`;
+
+    // Обновляем таймер времени, чтобы видеть, куда мотаем
+    if (isFinite(player.duration)) {
+        const targetTime = pos * player.duration;
+        ui.timeCurrent.textContent = formatDuration(targetTime);
+    }
+}
+
+function stopScrubDrag(e) {
+    if (!isDraggingScrubber) return;
+    isDraggingScrubber = false;
+
+    // Убираем глобальные слушатели
+    document.removeEventListener('mousemove', handleScrubMove);
+    document.removeEventListener('mouseup', stopScrubDrag);
+
+    // Финальный расчет времени
+    const rect = ui.timeline.getBoundingClientRect();
+    let pos = (e.clientX - rect.left) / rect.width;
+    pos = Math.max(0, Math.min(1, pos));
+
+    if (isFinite(player.duration)) {
+        const targetTime = pos * player.duration;
+        player.currentTime = targetTime;
+
+        // Отправляем ивент на сервер только СЕЙЧАС
+        if (!ignoreSyncEvents) {
+            socket.emit('sync_action', {
+                room_uuid: ROOM_UUID,
+                action: 'seek',
+                timestamp: targetTime
+            });
+        }
+    }
+}
+
+
 /* --- CUSTOM PLAYER LOGIC --- */
 
 function setupCustomPlayer() {
     // 1. Play/Pause
     ui.playBtn.addEventListener('click', togglePlay);
     ui.wrapper.addEventListener('click', (e) => {
-        // Клик по самому видео (если не попали в контролы) включает/выключает
         if (e.target === player || e.target === ui.wrapper) togglePlay();
     });
 
@@ -217,26 +274,10 @@ function setupCustomPlayer() {
         ui.pipBtn.style.display = 'none';
     }
 
-    // 5. Timeline Click (Seek)
-    ui.timeline.addEventListener('mousedown', (e) => {
-        const rect = ui.timeline.getBoundingClientRect();
-        const pos = (e.clientX - rect.left) / rect.width;
-        const targetTime = pos * player.duration;
+    // 5. Timeline Drag Logic
+    ui.timeline.addEventListener('mousedown', startScrubDrag);
 
-        if (isFinite(targetTime)) {
-            player.currentTime = targetTime;
-            // Мгновенная отправка события
-            if (!ignoreSyncEvents) {
-                socket.emit('sync_action', {
-                    room_uuid: ROOM_UUID,
-                    action: 'seek',
-                    timestamp: targetTime
-                });
-            }
-        }
-    });
-
-    // 6. Idle Detection (Автоскрытие контролов)
+    // 6. Idle Detection
     ui.wrapper.addEventListener('mousemove', resetIdleTimer);
     ui.wrapper.addEventListener('click', resetIdleTimer);
 
@@ -255,8 +296,7 @@ async function safePlay() {
     try {
         await player.play();
     } catch (e) {
-        // Ошибка AbortError нормальна при быстрой паузе, игнорируем
-        // console.warn("Play interrupted:", e);
+        //never mind
     } finally {
         isPlayPending = false;
     }
@@ -296,8 +336,12 @@ function updateVolumeUI() {
 
 function updateTimelineUI() {
     if (!isFinite(player.duration)) return;
+    if (isDraggingScrubber) return;
     const pct = (player.currentTime / player.duration) * 100;
     ui.progress.style.width = `${pct}%`;
+    if (ui.scrub) {
+        ui.scrub.style.left = `${pct}%`;
+    }
     ui.timeCurrent.textContent = formatDuration(player.currentTime);
     ui.timeDuration.textContent = formatDuration(player.duration);
 }
@@ -376,6 +420,23 @@ async function loadSettingsData() {
         const warning = document.getElementById('public-room-warning');
         if(warning) warning.style.display = 'block';
     }
+}
+
+async function openSettingsModal() {
+    document.getElementById('settings-modal').style.display = 'flex';
+
+    try {
+        const res = await fetch(`/api/rooms/${ROOM_UUID}`);
+        const data = await res.json();
+        const r = data.room;
+
+        document.getElementById('set-room-name').value = r.name;
+        document.getElementById('set-room-color').value = r.header_color;
+        document.getElementById('set-is-private').checked = r.is_private;
+        document.getElementById('set-guest-control').checked = r.allow_guest_control;
+
+        showSettingsTab('general');
+    } catch(e) { console.error(e); }
 }
 
 window.saveRoomSettings = async function() {
@@ -491,10 +552,11 @@ function initSocket() {
     });
 
     socket.on('status_update', (data) => {
-        if (data.sid === socket.id) return;
         updateViewerList(data);
-        updateTimelineMarkers(data);
-        handleSoftSync(data);
+        if (data.sid !== socket.id) {
+             updateTimelineMarkers(data);
+             handleSoftSync(data);
+        }
         updateDeltaDisplay(data.server_timestamp);
     });
 
@@ -527,7 +589,6 @@ function initSocket() {
         if(btn) { btn.disabled = false; btn.textContent = "Постучаться"; }
     });
 
-    // Обновление прогресса обработки (backend fix)
     socket.on('processing_progress', (data) => {
         updateProcessingProgress(data.video_id, data.percent);
     });
@@ -672,49 +733,79 @@ function sendHeartbeat() {
 
 function loadSource(url, startTime=0, startPaused=true) {
     console.log(`[Player] Loading URL: ${url}, StartTime: ${startTime}, StartPaused: ${startPaused}`);
+
+    // 1. Показываем оверлей загрузки
     const overlay = document.getElementById('video-overlay');
     if (overlay) overlay.style.display = 'flex';
     document.getElementById('overlay-text').textContent = "Загрузка...";
 
-    if (hls) { hls.destroy(); hls = null; }
+    // 2. Сброс UI в начальное состояние
+    if (ui.progress) ui.progress.style.width = '0%';
+    if (ui.buffer) ui.buffer.style.width = '0%';
+    if (ui.scrub) ui.scrub.style.left = '0%'; // Возвращаем кружок в начало
+    if (ui.timeCurrent) ui.timeCurrent.textContent = '00:00';
+    if (ui.timeDuration) ui.timeDuration.textContent = '00:00';
+    isDraggingScrubber = false;
 
+    // 3. Очистка предыдущего HLS инстанса
+    if (hls) {
+        hls.destroy();
+        hls = null;
+    }
+
+    // 4. Инициализация HLS или нативного воспроизведения
     if (Hls.isSupported()) {
         const config = {
             autoStartLoad: true,
             startPosition: startTime > 0 ? startTime : -1,
             debug: false,
         };
-        // Force Preload Logic
+
         if (forcePreload) {
             config.maxBufferLength = 600;
             config.maxMaxBufferLength = 3600;
             config.maxBufferSize = 500 * 1000 * 1000;
         }
+
         hls = new Hls(config);
         hls.loadSource(url);
         hls.attachMedia(player);
+
         hls.on(Hls.Events.MANIFEST_PARSED, function() {
             console.log("[HLS] Manifest Parsed");
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
 
-            // FIX: Используем safePlay вместо player.play()
             if (!startPaused) {
                 console.log("[Player] Auto-starting playback...");
                 safePlay();
             }
         });
+
         hls.on(Hls.Events.ERROR, (e, data) => {
-            if(data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-            else console.error("[HLS] Error:", data);
+            if(data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                hls.recoverMediaError();
+            } else {
+                console.error("[HLS] Error:", data);
+            }
         });
+
     } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
+        // Фоллбек для Safari
         player.src = url;
         player.addEventListener('loadedmetadata', function() {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
             if (!startPaused) safePlay();
-        });
+        }, {once: true});
+    } else {
+        // Фоллбек для обычных MP4
+        player.src = url;
+        player.addEventListener('loadedmetadata', function() {
+            if (overlay) overlay.style.display = 'none';
+            if (startTime > 0) player.currentTime = startTime;
+            if (!startPaused) safePlay();
+        }, {once: true});
     }
 }
 

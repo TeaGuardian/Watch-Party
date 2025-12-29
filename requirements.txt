@@ -11,3 +11,4 @@ captcha==0.5.0
 psycopg2-binary==2.9.11
 redis==7.1.0
 gevent==25.9.1
+requests==2.32.5

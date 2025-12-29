@@ -14,7 +14,7 @@ from core.models import User, Room, Video
 # --- ИСПРАВЛЕНИЕ: Инициализация SocketIO только один раз ---
 socketio = SocketIO(
     cors_allowed_origins="*",
-    message_queue=RedisConfig.URL,
+    #message_queue=RedisConfig.URL,
     manage_session=True # Важно для работы сессий
 )
 

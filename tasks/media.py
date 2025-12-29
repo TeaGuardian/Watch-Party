@@ -3,10 +3,9 @@ import os
 import shutil
 import subprocess
 import logging
-import math
+import requests
 from uuid import uuid4
 from datetime import datetime, timedelta
-from flask_socketio import SocketIO
 
 from tasks.celery_app import app
 from core.models import Video, Room
@@ -20,9 +19,26 @@ from config import AppConfig, RedisConfig
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Подключение к Redis для отправки событий
-# message_queue должен совпадать с настройками сервера
-celery_socketio = SocketIO(message_queue=RedisConfig.URL)
+
+FLASK_INTERNAL_URL = "http://web_app:8000/api/internal"
+
+def send_progress_to_flask(room_uuid, video_id, percent):
+    try:
+        requests.post(f"{FLASK_INTERNAL_URL}/progress", json={
+            'room_uuid': room_uuid,
+            'video_id': video_id,
+            'percent': percent
+        }, timeout=1) # Короткий таймаут, чтобы не тормозить процессинг
+    except Exception as e:
+        logger.warning(f"Failed to send progress to Flask: {e}")
+
+def send_refresh_to_flask(room_uuid):
+    try:
+        requests.post(f"{FLASK_INTERNAL_URL}/refresh", json={
+            'room_uuid': room_uuid
+        }, timeout=1)
+    except Exception as e:
+        logger.warning(f"Failed to send refresh to Flask: {e}")
 
 
 def get_video_duration(file_path):
@@ -148,12 +164,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
                             if percent % 10 == 0:
                                 logger.info(f"Processing progress: {percent}%")
 
-                            # ОТПРАВЛЯЕМ В СОКЕТЫ
-                            # ВАЖНО: namespace='/' обязателен, иначе клиент не увидит
-                            celery_socketio.emit('processing_progress', {
-                                'video_id': video_id,
-                                'percent': percent
-                            }, room=room_uuid, namespace='/')
+                            send_progress_to_flask(room_uuid, video_id, percent)
 
                 except ValueError:
                     pass  # Игнорируем ошибки парсинга конкретной строки
@@ -205,8 +216,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
         video.storage_path = (storage_folder + playlist_name).replace('\\', '/')
         video.save()
 
-        # Уведомляем фронтенд, что готово (namespace='/'!)
-        celery_socketio.emit('playlist_refresh', {}, room=room_uuid, namespace='/')
+        send_refresh_to_flask(room_uuid)
         logger.info(f"Video {video_id} is READY.")
 
     except Exception as e:
@@ -216,7 +226,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
             if v:
                 v.status = 'error'
                 v.save()
-                celery_socketio.emit('playlist_refresh', {}, room=room_uuid, namespace='/')
+                send_refresh_to_flask(room_uuid)
         except:
             pass
 
@@ -329,7 +339,7 @@ def cleanup_old_videos_task():
     for r_uuid in affected_rooms:
         try:
             # Шлем событие 'playlist_refresh' в комнату
-            celery_socketio.emit('playlist_refresh', {}, to=r_uuid)
+            send_refresh_to_flask(r_uuid)
             logger.info(f"Notified room {r_uuid} about auto-deletion")
         except Exception as e:
             logger.error(f"Failed to emit socket to {r_uuid}: {e}")
@@ -392,7 +402,7 @@ def check_stuck_videos_task():
     # Уведомляем комнаты, чтобы у пользователей пропала вечная загрузка
     for r_uuid in affected_rooms:
         try:
-            celery_socketio.emit('playlist_refresh', {}, room=r_uuid)
+            send_refresh_to_flask(r_uuid)
         except:
             pass
 
