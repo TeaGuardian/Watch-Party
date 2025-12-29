@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   # --- Nginx (Updated for SSL) ---
@@ -134,10 +133,10 @@ services:
           cpus: '1'
           memory: 800M
 
-# --- 7. Celery Worker (Только выполнение задач) ---
-  celery_worker:
+# --- 7.1 Celery Fast Worker (Для легких файлов) ---
+  celery_fast:
     build: .
-    container_name: celery_worker
+    container_name: celery_fast
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -148,32 +147,47 @@ services:
       - minio
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: celery -A tasks.celery_app worker --loglevel=info --pool=gevent --concurrency=10
+    command: celery -A tasks.celery_app worker -Q fast_queue -c ${FAST_WORKER_CONCURRENCY:-3} --loglevel=info
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 1500M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '0.8'
+          memory: 512M
 
-  # --- 8. Celery Beat (Только планировщик) ---
+  # --- 7.2 Celery Heavy Worker (Для тяжелых файлов) ---
+  celery_heavy:
+    build: .
+    container_name: celery_heavy
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - temp_uploads:/app/storage/uploads
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A tasks.celery_app worker -Q heavy_queue -c ${HEAVY_WORKER_CONCURRENCY:-2} --loglevel=info
+    deploy:
+      resources:
+        limits:
+          cpus: '1.2'
+          memory: 1024M
+
+  # --- 8. Celery Beat (Планировщик - без изменений) ---
   celery_beat:
     build: .
     container_name: celery_beat
     restart: unless-stopped
     env_file: .env
-    # Биту не нужны объемы с файлами, ему нужен только код и БД/Redis
     depends_on:
       - postgres
       - redis
-    # Команда запуска планировщика
     command: celery -A tasks.celery_app beat --loglevel=info
     deploy:
       resources:
         limits:
-          # Планировщик ест очень мало ресурсов
           cpus: '0.2'
           memory: 256M
 

@@ -34,6 +34,9 @@ class AppConfig:
 
     MAX_CONTENT_LENGTH = MAX_VIDEO_SIZE_BYTES + 10 * 1024 * 1024
 
+    HEAVY_VIDEO_THRESHOLD_MB = int(os.getenv("HEAVY_VIDEO_THRESHOLD_MB", 30))
+    HEAVY_VIDEO_THRESHOLD_BYTES = HEAVY_VIDEO_THRESHOLD_MB * 1024 * 1024
+
 
 class DBConfig:
     # Переключатель: True = PostgreSQL, False = SQLite
@@ -76,10 +79,17 @@ class RedisConfig:
 class CeleryConfig:
     BROKER_URL = RedisConfig.URL
     RESULT_BACKEND = RedisConfig.URL
-    # Настройки сериализации (безопасность)
     TASK_SERIALIZER = 'json'
     RESULT_SERIALIZER = 'json'
     ACCEPT_CONTENT = ['json']
+
+    QUEUE_FAST = 'fast_queue'
+    QUEUE_HEAVY = 'heavy_queue'
+
+    # Настройки конкурентности
+    # Сколько задач обрабатывается параллельно
+    FAST_WORKER_CONCURRENCY = int(os.getenv("FAST_WORKER_CONCURRENCY", 3))
+    HEAVY_WORKER_CONCURRENCY = int(os.getenv("HEAVY_WORKER_CONCURRENCY", 2))
 
 
 # Создаем необходимые папки при старте, если их нет

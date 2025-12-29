@@ -77,6 +77,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
     video.save()
 
     room_uuid = str(video.room.uuid)
+    send_refresh_to_flask(room_uuid)
 
     # Создаем временную папку
     transcode_dir = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode", str(uuid4()))

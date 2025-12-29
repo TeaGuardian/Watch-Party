@@ -24,7 +24,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchStat
 from core.cache import get_cache, set_cache, delete_cache
 from core.validators import validate_password_strength
-from config import BotConfig, AppConfig
+from config import BotConfig, AppConfig, CeleryConfig
 from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task
 
 api = Blueprint('api', __name__, url_prefix='/api')
@@ -858,9 +858,25 @@ def upload_video(current_user, room_uuid):
 
         temp_path = os.path.join(AppConfig.UPLOAD_FOLDER, f"temp_{video.id}_{filename}")
         file.save(temp_path)
-        process_video_task.delay(video.id, temp_path)
+        if file_size > AppConfig.HEAVY_VIDEO_THRESHOLD_BYTES:
+            target_queue = CeleryConfig.QUEUE_HEAVY
+            print(f"⚖️ Task routed to HEAVY queue (Size: {file_size / 1024 / 1024:.2f} MB)")
+        else:
+            target_queue = CeleryConfig.QUEUE_FAST
+            print(f"🚀 Task routed to FAST queue (Size: {file_size / 1024 / 1024:.2f} MB)")
+
+            # 4. Ставим статус 'queued' перед отправкой
+        video.status = 'queued'
+        video.save()
+
+        # 5. Используем apply_async для указания очереди
+        process_video_task.apply_async(
+            args=[video.id, temp_path],
+            queue=target_queue
+        )
+
         socketio.emit('playlist_refresh', {}, to=str(room_uuid))
-        return jsonify({'success': True, 'message': 'Upload started', 'video_id': video.id})
+        return jsonify({'success': True, 'message': 'Added to processing queue', 'video_id': video.id})
 
     return jsonify({'error': 'Invalid file type'}), 400
 

@@ -19,7 +19,16 @@ app.conf.update(
     task_serializer=CeleryConfig.TASK_SERIALIZER,
     result_serializer=CeleryConfig.RESULT_SERIALIZER,
     accept_content=CeleryConfig.ACCEPT_CONTENT,
-    timezone='UTC'
+    timezone='UTC',
+    task_default_queue=CeleryConfig.QUEUE_FAST,
+    task_routes={
+        'tasks.media.process_video': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.cleanup_old_videos': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.check_stuck_videos': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.daily_s3_garbage_collector': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.delete_storage_folder': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.delete_account_files': {'queue': CeleryConfig.QUEUE_FAST},
+    }
 )
 
 # Автоматический поиск задач в модулях
@@ -29,15 +38,18 @@ app.conf.imports = ['tasks.media']
 app.conf.beat_schedule = {
     'cleanup-every-10-minutes': {
         'task': 'tasks.media.cleanup_old_videos',
-        'schedule': crontab(minute='*/10'), # Каждые 10 минут
+        'schedule': crontab(minute='*/10'),
+        'options': {'queue': CeleryConfig.QUEUE_FAST}
     },
     'check-stuck-every-hour': {
         'task': 'tasks.media.check_stuck_videos',
         'schedule': crontab(minute='*/10'),
+        'options': {'queue': CeleryConfig.QUEUE_FAST}
     },
     'global-s3-gc-daily': {
         'task': 'tasks.media.daily_s3_garbage_collector',
         'schedule': crontab(hour=4, minute=0),
+        'options': {'queue': CeleryConfig.QUEUE_FAST}
     },
 }
 
