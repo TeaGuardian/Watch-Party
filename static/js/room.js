@@ -80,21 +80,48 @@ function initUIReferences() {
     ui.fullscreenBtn = document.getElementById('btn-fullscreen');
     ui.pipBtn = document.getElementById('btn-pip');
     ui.toastContainer = document.getElementById('player-toasts');
+    const btnSettings = document.getElementById('btn-settings-player');
+    const settingsPopover = document.getElementById('player-settings-popover');
 
-    // Настройка чекбокса предзагрузки
+    if (btnSettings && settingsPopover) {
+        btnSettings.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isVisible = settingsPopover.style.display === 'block';
+            settingsPopover.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) {
+                const rect = btnSettings.getBoundingClientRect();
+                settingsPopover.style.bottom = '50px';
+                settingsPopover.style.right = '20px';
+                settingsPopover.style.top = 'auto';
+                settingsPopover.style.left = 'auto';
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (settingsPopover.style.display === 'block' &&
+                !settingsPopover.contains(e.target) &&
+                !btnSettings.contains(e.target)) {
+                settingsPopover.style.display = 'none';
+            }
+        });
+    }
+
+    // 2. Force Preload
     const chkPreload = document.getElementById('chk-preload');
     if (chkPreload) {
         chkPreload.addEventListener('change', (e) => {
             forcePreload = e.target.checked;
             console.log("Preload setting changed:", forcePreload);
-            // Если видео уже загружено, перезагружаем источник чтобы применить настройки
-            if (currentVideoId) {
-                const activeItem = document.querySelector(`.video-item[data-id="${currentVideoId}"]`);
-                if (activeItem) {
-                    console.log("Reloading video to apply preload settings...");
-                    // Мы не вызываем click(), чтобы не слать сокет всем, а просто перезагружаем локально HLS
-                    // Но проще всего подождать смены видео.
+
+            if (hls) {
+                if (forcePreload) {
+                    hls.config.maxBufferLength = 60 * 60 * 4;
+                    hls.config.maxMaxBufferLength = 60 * 60 * 5;
+                } else {
+                    hls.config.maxBufferLength = 120;
+                    hls.config.maxMaxBufferLength = 180;
                 }
+                showPlayerToast(forcePreload ? "🚀 Полная загрузка включена" : "📉 Экономия трафика включена");
             }
         });
     }
@@ -601,63 +628,84 @@ function updateTimelineMarkers(data) {
     renderMarkers();
 }
 
+/* --- Обновленная функция renderMarkers --- */
 function renderMarkers() {
-    if (!isFinite(player.duration) || player.duration <= 0) return;
     ui.markers.innerHTML = '';
+    if (!isFinite(player.duration) || player.duration <= 0) return;
 
+    // Преобразуем объект в массив
     const users = Object.values(peersState);
     if (users.length === 0) return;
 
-    // Сортируем по времени для кластеризации
-    users.sort((a, b) => a.timestamp - b.timestamp);
+    // Сортируем по времени
+    users.sort((a, b) => a.buffered - b.buffered);
 
+    // Кластеризация
     const clusters = [];
     if (users.length > 0) {
-        let currentCluster = { users: [users[0]], timestamp: users[0].timestamp };
+        let currentCluster = [users[0]];
+
         for (let i = 1; i < users.length; i++) {
-            const u = users[i];
-            const diffPercent = Math.abs(u.timestamp - currentCluster.timestamp) / player.duration * 100;
-            // Если разница меньше 2%, объединяем в кластер
-            if (diffPercent < 2.0) {
-                currentCluster.users.push(u);
+            const prevUser = currentCluster[currentCluster.length - 1];
+            const currUser = users[i];
+
+            // Разница в процентах таймлайна
+            const diffPct = (Math.abs(currUser.buffered - prevUser.buffered) / player.duration) * 100;
+
+            // Если разница меньше — добавляем в текущий кластер
+            if (diffPct < 2) {
+                currentCluster.push(currUser);
             } else {
                 clusters.push(currentCluster);
-                currentCluster = { users: [u], timestamp: u.timestamp };
+                currentCluster = [currUser];
             }
         }
         clusters.push(currentCluster);
     }
 
+    // Отрисовка
     clusters.forEach(cluster => {
-        const leftPct = (cluster.timestamp / player.duration) * 100;
-        let statusClass = 'status-green';
-        const states = cluster.users.map(u => calculateStatus(u));
-        // Выбираем "худший" статус для цвета кластера
-        if (states.includes('status-red')) statusClass = 'status-red';
-        else if (states.includes('status-yellow')) statusClass = 'status-yellow';
-        else if (states.includes('status-gray')) statusClass = 'status-gray';
+        // Среднее время кластера для позиционирования
+        const avgBuffer = cluster.reduce((sum, u) => sum + u.buffered, 0) / cluster.length;
+        const leftPct = (avgBuffer / player.duration) * 100;
 
         const marker = document.createElement('div');
-        marker.className = `user-marker ${statusClass}`;
+        marker.className = 'user-marker';
         marker.style.left = `${leftPct}%`;
 
-        const names = cluster.users.map(u => u.username).join(', ');
-        const mainUser = cluster.users[0];
+        // Берем аватарку лидера кластера
+        const mainUser = cluster[0];
+        const avatarSrc = mainUser.avatar || `https://ui-avatars.com/api/?name=${mainUser.username}`;
 
-        // Расчет дельты
-        let deltaHtml = '';
-        if (mainUser.server_timestamp) {
-            const delta = (mainUser.timestamp - mainUser.server_timestamp).toFixed(1);
-            const deltaClass = Math.abs(delta) < 1 ? 'tt-delta good' : 'tt-delta bad';
-            deltaHtml = `<span class="${deltaClass}">(${delta > 0 ? '+' : ''}${delta}s)</span>`;
-        }
+        // Бейдж с количеством (+N), если больше одного
+        const countBadge = cluster.length > 1
+            ? `<div class="marker-badge">+${cluster.length - 1}</div>`
+            : '';
+
+        // HTML самого маркера
+        marker.innerHTML = `
+            <div class="marker-content">
+                <img src="${avatarSrc}" class="marker-avatar" alt="${mainUser.username}">
+                ${countBadge}
+            </div>
+        `;
+
+        // Генерация Tooltip
+        let tooltipRows = cluster.map(u => {
+            const uAvatar = u.avatar || `https://ui-avatars.com/api/?name=${u.username}`;
+            return `
+                <div class="tt-row">
+                    <img src="${uAvatar}" class="tt-avatar">
+                    <span class="tt-name">${u.username}</span>
+                    <span class="tt-time">Load: ${formatDuration(u.buffered)}</span>
+                </div>
+            `;
+        }).join('');
 
         const tooltip = document.createElement('div');
         tooltip.className = 'marker-tooltip';
-        tooltip.innerHTML = `
-            <div class="tt-names">${names}</div>
-            <div class="tt-info">${formatDuration(mainUser.timestamp)} ${deltaHtml}</div>
-        `;
+        tooltip.innerHTML = tooltipRows;
+
         marker.appendChild(tooltip);
         ui.markers.appendChild(marker);
     });
@@ -734,38 +782,56 @@ function sendHeartbeat() {
 function loadSource(url, startTime=0, startPaused=true) {
     console.log(`[Player] Loading URL: ${url}, StartTime: ${startTime}, StartPaused: ${startPaused}`);
 
-    // 1. Показываем оверлей загрузки
+    // 1. Показываем оверлей и сбрасываем UI
     const overlay = document.getElementById('video-overlay');
     if (overlay) overlay.style.display = 'flex';
     document.getElementById('overlay-text').textContent = "Загрузка...";
 
-    // 2. Сброс UI в начальное состояние
+    // Сброс прогресс-баров
     if (ui.progress) ui.progress.style.width = '0%';
     if (ui.buffer) ui.buffer.style.width = '0%';
-    if (ui.scrub) ui.scrub.style.left = '0%'; // Возвращаем кружок в начало
+    if (ui.scrub) ui.scrub.style.left = '0%';
     if (ui.timeCurrent) ui.timeCurrent.textContent = '00:00';
     if (ui.timeDuration) ui.timeDuration.textContent = '00:00';
     isDraggingScrubber = false;
 
-    // 3. Очистка предыдущего HLS инстанса
+    const playSvg = ui.playBtn.querySelector('.icon-play');
+    const pauseSvg = ui.playBtn.querySelector('.icon-pause');
+    if (playSvg && pauseSvg) {
+        playSvg.style.display = 'block';
+        pauseSvg.style.display = 'none';
+    }
+
+    player.preload = "auto";
+
+    // Сброс маркеров
+    peersState = {};
+    renderMarkers();
+
+    // 2. Очистка старого HLS
     if (hls) {
         hls.destroy();
         hls = null;
     }
 
-    // 4. Инициализация HLS или нативного воспроизведения
+    // 3. Инициализация
     if (Hls.isSupported()) {
+        const bufferConfig = forcePreload ? {
+            maxBufferLength: 60 * 60 * 4,
+            maxMaxBufferLength: 60 * 60 * 5,
+            maxBufferSize: 600 * 1000 * 1000
+        } : {
+            maxBufferLength: 120,
+            maxMaxBufferLength: 180,
+            maxBufferSize: 60 * 1000 * 1000
+        };
+
         const config = {
             autoStartLoad: true,
             startPosition: startTime > 0 ? startTime : -1,
             debug: false,
+            ...bufferConfig
         };
-
-        if (forcePreload) {
-            config.maxBufferLength = 600;
-            config.maxMaxBufferLength = 3600;
-            config.maxBufferSize = 500 * 1000 * 1000;
-        }
 
         hls = new Hls(config);
         hls.loadSource(url);
@@ -785,22 +851,22 @@ function loadSource(url, startTime=0, startPaused=true) {
         hls.on(Hls.Events.ERROR, (e, data) => {
             if(data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                 hls.recoverMediaError();
-            } else {
-                console.error("[HLS] Error:", data);
             }
         });
 
     } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
-        // Фоллбек для Safari
+        // Safari (Native HLS)
         player.src = url;
+        player.load();
         player.addEventListener('loadedmetadata', function() {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
             if (!startPaused) safePlay();
         }, {once: true});
     } else {
-        // Фоллбек для обычных MP4
+        // Fallback MP4
         player.src = url;
+        player.load();
         player.addEventListener('loadedmetadata', function() {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
@@ -869,36 +935,121 @@ function updateProcessingProgress(videoId, percent) {
 function renderPlaylist(videos) {
     const container = document.getElementById('playlist-container');
     if (!container) return;
+
+    // 1. Обработка пустого списка
     if (videos.length === 0) {
         container.innerHTML = '<div class="empty-state">Нет видео</div>';
         return;
     }
-    const activeId = currentVideoId;
-    container.innerHTML = videos.map(v => {
+
+    // Если список был пуст, удаляем заглушку "Нет видео" перед рендером
+    const emptyState = container.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    // Создаем Set из ID новых видео для быстрой проверки удаленных
+    const incomingIds = new Set(videos.map(v => v.id));
+
+    // 2. Обновление (Patching) и Добавление
+    videos.forEach(v => {
+        let item = container.querySelector(`.video-item[data-id="${v.id}"]`);
         const isReady = v.status === 'ready';
-        const itemClass = `video-item ${v.id === activeId ? 'active' : ''} ${!isReady ? 'disabled' : ''}`;
 
-        let statusBadge = '';
-        if (v.status === 'processing') statusBadge = '<span style="color:orange">⏳ Processing...</span>';
-        else if (v.status === 'uploading') statusBadge = '<span style="color:#3498db">⬆️ Uploading...</span>';
-        else if (v.status === 'error') statusBadge = '<span style="color:red">❌ Error</span>';
+        // Генерация HTML статуса с учетом кэша процентов (processingMap)
+        let statusHtml = '';
+        if (v.status === 'processing') {
+            const percent = processingMap[v.id];
+            if (percent) {
+                statusHtml = `<span style="color:orange; font-weight:bold;">⏳ Обработка: ${percent}%</span>`;
+            } else {
+                statusHtml = '<span style="color:orange">⏳ Processing...</span>';
+            }
+        } else if (v.status === 'uploading') {
+            statusHtml = '<span style="color:#3498db">⬆️ Uploading...</span>';
+        } else if (v.status === 'error') {
+            statusHtml = '<span style="color:red">❌ Error</span>';
+        } else {
+            statusHtml = formatDuration(v.duration);
+        }
 
-        // Кнопки действий
-        const controls = (isOwner || isAllowedGuestControl) ? `
-            <div class="item-actions">
-                <button class="btn-icon-action btn-edit" onclick="renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')">✏️</button>
-                <button class="btn-icon-action btn-delete" onclick="deleteVideo(event, ${v.id})">×</button>
-            </div>` : '';
+        // Генерация кнопок (на случай смены прав или создания элемента)
+        const controlsHtml = (isOwner || isAllowedGuestControl) ? `
+            <button class="btn-icon-action btn-edit" onclick="renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')">✏️</button>
+            <button class="btn-icon-action btn-delete" onclick="deleteVideo(event, ${v.id})">×</button>
+        ` : '';
 
-        return `
-        <div class="${itemClass}" data-id="${v.id}" onclick="${isReady ? `changeVideo(${v.id})` : ''}">
-            <div class="video-item-info">
-                <div class="video-title" title="${v.title}">${v.title}</div>
-                <div class="video-status">${statusBadge || formatDuration(v.duration)}</div>
-            </div>
-            ${controls}
-        </div>`;
-    }).join('');
+        if (item) {
+            // --- ЭЛЕМЕНТ СУЩЕСТВУЕТ -> ОБНОВЛЯЕМ ---
+
+            // 1. Класс Active
+            if (v.id === currentVideoId) item.classList.add('active');
+            else item.classList.remove('active');
+
+            // 2. Класс Disabled и Click Handler
+            if (!isReady) {
+                item.classList.add('disabled');
+                item.onclick = null; // Убираем клик, если не готово
+            } else {
+                item.classList.remove('disabled');
+                // Обновляем клик только если его не было (чтобы не пересоздавать функцию постоянно)
+                if (!item.onclick) {
+                    item.onclick = () => changeVideo(v.id);
+                }
+            }
+
+            // 3. Текстовый контент (Заголовок)
+            const titleEl = item.querySelector('.video-title');
+            if (titleEl && titleEl.textContent !== v.title) {
+                titleEl.textContent = v.title;
+                titleEl.title = v.title;
+                // Обновляем onclick кнопки rename, так как там зашит старый title
+                const editBtn = item.querySelector('.btn-edit');
+                if (editBtn) {
+                    editBtn.setAttribute('onclick', `renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')`);
+                }
+            }
+
+            // 4. Статус (Прогресс)
+            const statusEl = item.querySelector('.video-status');
+            // Обновляем HTML только если он изменился, чтобы не сбивать анимации или выделение
+            if (statusEl && statusEl.innerHTML !== statusHtml) {
+                statusEl.innerHTML = statusHtml;
+            }
+
+            // 5. Кнопки действий (если права изменились динамически)
+            const actionsDiv = item.querySelector('.item-actions');
+             if (actionsDiv && actionsDiv.innerHTML !== controlsHtml) {
+                actionsDiv.innerHTML = controlsHtml;
+            }
+
+        } else {
+            // --- ЭЛЕМЕНТА НЕТ -> СОЗДАЕМ ---
+            const newItem = document.createElement('div');
+            newItem.className = `video-item ${v.id === currentVideoId ? 'active' : ''} ${!isReady ? 'disabled' : ''}`;
+            newItem.setAttribute('data-id', v.id);
+            if (isReady) {
+                newItem.onclick = () => changeVideo(v.id);
+            }
+
+            newItem.innerHTML = `
+                <div class="video-item-info">
+                    <div class="video-title" title="${v.title}">${v.title}</div>
+                    <div class="video-status">${statusHtml}</div>
+                </div>
+                ${(isOwner || isAllowedGuestControl) ? `<div class="item-actions">${controlsHtml}</div>` : ''}
+            `;
+            container.appendChild(newItem);
+        }
+    });
+
+    // 3. Удаление видео, которых больше нет в списке
+    const currentItems = container.querySelectorAll('.video-item');
+    currentItems.forEach(el => {
+        const id = parseInt(el.getAttribute('data-id'));
+        if (!incomingIds.has(id)) {
+            el.remove();
+        }
+    });
+
     updateTTLCounters();
 }
 
@@ -1124,6 +1275,7 @@ function addSystemMessage(text) {
 function cleanupViewers() {
     const now = Date.now();
     const timeout = 10000; // 10 секунд
+    let hasChanges = false;
 
     // Проходим по всем известным пользователям
     for (const sid in lastSeenMap) {
@@ -1135,8 +1287,11 @@ function cleanupViewers() {
 
             // Удаляем из DOM
             const item = document.getElementById(`viewer-${sid}`);
-            if (item) {
-                item.remove();
+            if (item) item.remove();
+
+            if (peersState[sid]) {
+                delete peersState[sid];
+                hasChanges = true;
             }
 
             // Удаляем из памяти
@@ -1144,4 +1299,6 @@ function cleanupViewers() {
             console.log(`User ${sid} removed due to timeout`);
         }
     }
+
+    if (hasChanges) renderMarkers();
 }
