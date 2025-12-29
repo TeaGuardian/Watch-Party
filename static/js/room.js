@@ -11,6 +11,7 @@ let isOwner = false;
 let isPrivate = true;
 let isAllowedGuestControl = false;
 let currentVideoId = null;
+let currentRoomInfo = null;
 let isDraggingScrubber = false; // Флаг: перетягивает ли пользователь ползунок прямо сейчас
 let lastSettingsInteraction = 0;
 const MAX_CHAT_MESSAGES = 200; // Ограничение истории чата
@@ -137,6 +138,7 @@ async function loadUserInfo() {
 }
 
 async function loadRoomData() {
+    console.log("Loading room data");
     try {
         const res = await fetch(`/api/rooms/${ROOM_UUID}`);
         if (res.status === 404) {
@@ -144,6 +146,7 @@ async function loadRoomData() {
              return;
         }
         const data = await res.json();
+        currentRoomInfo = data.room;
 
         // Проверка доступа
         if (!data.has_access) {
@@ -267,7 +270,35 @@ function setupCustomPlayer() {
     // 1. Play/Pause
     ui.playBtn.addEventListener('click', togglePlay);
     ui.wrapper.addEventListener('click', (e) => {
-        if (e.target === player || e.target === ui.wrapper) togglePlay();
+        // 1. Игнорируем клики, если они пришлись на контролы, меню настроек или тосты
+        const settingsMenu = document.getElementById('player-settings-popover');
+        if (ui.controls.contains(e.target) ||
+            (settingsMenu && settingsMenu.contains(e.target)) ||
+            e.target.closest('.player-toast')) {
+            return;
+        }
+
+        // 2. Математика зоны клика
+        const rect = ui.wrapper.getBoundingClientRect();
+
+        // Координаты клика относительно плеера
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        // Центр плеера
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+
+        const minDim = Math.min(rect.width, rect.height);
+        const allowedRadius = minDim * 0.2;
+        const distance = Math.hypot(clickX - centerX, clickY - centerY);
+
+        // 3. Пауза
+        if (distance <= allowedRadius) {
+            togglePlay();
+        } else {
+            resetIdleTimer();
+        }
     });
 
     // 2. Volume
@@ -405,6 +436,10 @@ window.toggleSettings = function() {
     const area = document.getElementById('settings-area');
     if (area.style.display === 'none') {
         area.style.display = 'block';
+        lastSettingsInteraction = 0;
+        if (currentRoomInfo) {
+            loadSettingsInputs(currentRoomInfo);
+        }
         loadSettingsData(); // Подгружаем актуальные данные
         area.scrollIntoView({ behavior: 'smooth' });
     } else {
@@ -900,7 +935,7 @@ function initSettingsInteractionTracker() {
             // При любом вводе или клике обновляем таймер
             const updateTime = () => {
                 lastSettingsInteraction = Date.now();
-                // console.log("Settings interaction detected, updates paused for 60s");
+                console.log("Settings interaction detected, updates paused for 60s");
             };
             el.addEventListener('input', updateTime);
             el.addEventListener('change', updateTime);
@@ -1010,7 +1045,7 @@ function renderPlaylist(videos) {
         if (v.status === 'processing') {
             const percent = processingMap[v.id];
             badgeHtml = percent
-                ? `<span style="color:orange; font-weight:bold;">⏳ ${percent}%</span>`
+                ? `<span style="color:orange; font-weight:bold;">⏳ Обработка: ${percent}%</span>`
                 : '<span style="color:orange">⏳ Processing...</span>';
         } else if (v.status === 'uploading') {
             badgeHtml = '<span style="color:#3498db">⬆️ Uploading...</span>';
