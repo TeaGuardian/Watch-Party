@@ -12,6 +12,9 @@ let isPrivate = true;
 let isAllowedGuestControl = false;
 let currentVideoId = null;
 let isDraggingScrubber = false; // Флаг: перетягивает ли пользователь ползунок прямо сейчас
+let lastSettingsInteraction = 0;
+const MAX_CHAT_MESSAGES = 200; // Ограничение истории чата
+const SETTINGS_EDIT_SOFT_LOCK = 60000;
 
 // UI Elements References
 const ui = {
@@ -51,6 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     player = document.getElementById('video-player');
     initUIReferences();
     setupCustomPlayer();
+    initSettingsInteractionTracker();
     await loadUserInfo();
     await loadRoomData();
     initSocket();
@@ -88,13 +92,6 @@ function initUIReferences() {
             e.stopPropagation();
             const isVisible = settingsPopover.style.display === 'block';
             settingsPopover.style.display = isVisible ? 'none' : 'block';
-            if (!isVisible) {
-                const rect = btnSettings.getBoundingClientRect();
-                settingsPopover.style.bottom = '50px';
-                settingsPopover.style.right = '20px';
-                settingsPopover.style.top = 'auto';
-                settingsPopover.style.left = 'auto';
-            }
         });
 
         document.addEventListener('click', (e) => {
@@ -188,7 +185,12 @@ async function loadRoomData() {
         // Если открыта панель настроек, обновляем инпуты (чтобы видеть актуальные данные)
         const settingsArea = document.getElementById('settings-area');
         if (settingsArea && settingsArea.style.display === 'block') {
-            loadSettingsInputs(data.room);
+            const timeSinceInteraction = Date.now() - lastSettingsInteraction;
+            if (timeSinceInteraction > SETTINGS_EDIT_SOFT_LOCK) {
+                loadSettingsInputs(data.room);
+            } else {
+                console.log(`Skipping settings update: user is active (idle: ${Math.round(timeSinceInteraction/1000)}s)`);
+            }
         }
 
     } catch(e) { console.error(e); }
@@ -407,6 +409,7 @@ window.toggleSettings = function() {
         area.scrollIntoView({ behavior: 'smooth' });
     } else {
         area.style.display = 'none';
+        lastSettingsInteraction = 0;
     }
 }
 
@@ -648,11 +651,8 @@ function renderMarkers() {
         for (let i = 1; i < users.length; i++) {
             const prevUser = currentCluster[currentCluster.length - 1];
             const currUser = users[i];
-
-            // Разница в процентах таймлайна
             const diffPct = (Math.abs(currUser.buffered - prevUser.buffered) / player.duration) * 100;
 
-            // Если разница меньше — добавляем в текущий кластер
             if (diffPct < 2) {
                 currentCluster.push(currUser);
             } else {
@@ -665,7 +665,7 @@ function renderMarkers() {
 
     // Отрисовка
     clusters.forEach(cluster => {
-        // Среднее время кластера для позиционирования
+        // Среднее время кластера
         const avgBuffer = cluster.reduce((sum, u) => sum + u.buffered, 0) / cluster.length;
         const leftPct = (avgBuffer / player.duration) * 100;
 
@@ -673,16 +673,15 @@ function renderMarkers() {
         marker.className = 'user-marker';
         marker.style.left = `${leftPct}%`;
 
-        // Берем аватарку лидера кластера
+        // Аватарка лидера
         const mainUser = cluster[0];
         const avatarSrc = mainUser.avatar || `https://ui-avatars.com/api/?name=${mainUser.username}`;
 
-        // Бейдж с количеством (+N), если больше одного
+        // Бейдж количества
         const countBadge = cluster.length > 1
             ? `<div class="marker-badge">+${cluster.length - 1}</div>`
             : '';
 
-        // HTML самого маркера
         marker.innerHTML = `
             <div class="marker-content">
                 <img src="${avatarSrc}" class="marker-avatar" alt="${mainUser.username}">
@@ -690,21 +689,35 @@ function renderMarkers() {
             </div>
         `;
 
-        // Генерация Tooltip
-        let tooltipRows = cluster.map(u => {
+        // --- ЛОГИКА ПОЗИЦИОНИРОВАНИЯ ТУЛТИПА ---
+        let posClass = 'pos-center';
+        if (leftPct < 15) posClass = 'pos-left';
+        else if (leftPct > 85) posClass = 'pos-right';
+
+        // --- ГЕНЕРАЦИЯ КОМПАКТНОГО СПИСКА ---
+        const userRows = cluster.map(u => {
             const uAvatar = u.avatar || `https://ui-avatars.com/api/?name=${u.username}`;
             return `
-                <div class="tt-row">
+                <div class="tt-user-row">
                     <img src="${uAvatar}" class="tt-avatar">
                     <span class="tt-name">${u.username}</span>
-                    <span class="tt-time">Load: ${formatDuration(u.buffered)}</span>
                 </div>
             `;
         }).join('');
 
+        // Формируем время для футера
+        const timeString = formatDuration(avgBuffer);
+
         const tooltip = document.createElement('div');
-        tooltip.className = 'marker-tooltip';
-        tooltip.innerHTML = tooltipRows;
+        tooltip.className = `marker-tooltip ${posClass}`;
+        tooltip.innerHTML = `
+            <div class="tt-users-list">
+                ${userRows}
+            </div>
+            <div class="tt-footer">
+                ⏱ ${timeString}
+            </div>
+        `;
 
         marker.appendChild(tooltip);
         ui.markers.appendChild(marker);
@@ -877,9 +890,33 @@ function loadSource(url, startTime=0, startPaused=true) {
 
 /* --- HELPERS --- */
 
+function initSettingsInteractionTracker() {
+    // Список ID инпутов, за которыми следим
+    const settingIds = ['set-room-name', 'set-room-color', 'set-is-private', 'set-guest-control'];
+
+    settingIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            // При любом вводе или клике обновляем таймер
+            const updateTime = () => {
+                lastSettingsInteraction = Date.now();
+                // console.log("Settings interaction detected, updates paused for 60s");
+            };
+            el.addEventListener('input', updateTime);
+            el.addEventListener('change', updateTime);
+            el.addEventListener('click', updateTime);
+        }
+    });
+}
+
 function appendChatMessage(data) {
     const container = document.getElementById('chat-messages');
     if(!container) return;
+
+    while (container.children.length >= MAX_CHAT_MESSAGES) {
+        container.removeChild(container.firstChild);
+    }
+
     const div = document.createElement('div');
     if (data.is_system) {
         div.className = 'system-message';
@@ -888,6 +925,21 @@ function appendChatMessage(data) {
         div.className = 'message';
         div.innerHTML = `<span class="msg-author">${data.username}:</span><span class="msg-text">${data.text}</span>`;
     }
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+function addSystemMessage(text) {
+    const container = document.getElementById('chat-messages');
+    if(!container) return;
+
+    while (container.children.length >= MAX_CHAT_MESSAGES) {
+        container.removeChild(container.firstChild);
+    }
+
+    const div = document.createElement('div');
+    div.className = 'system-message';
+    div.textContent = text;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
 }
@@ -942,11 +994,10 @@ function renderPlaylist(videos) {
         return;
     }
 
-    // Если список был пуст, удаляем заглушку "Нет видео" перед рендером
+    // Если список был пуст, удаляем заглушку "Нет видео"
     const emptyState = container.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
-    // Создаем Set из ID новых видео для быстрой проверки удаленных
     const incomingIds = new Set(videos.map(v => v.id));
 
     // 2. Обновление (Patching) и Добавление
@@ -954,81 +1005,87 @@ function renderPlaylist(videos) {
         let item = container.querySelector(`.video-item[data-id="${v.id}"]`);
         const isReady = v.status === 'ready';
 
-        // Генерация HTML статуса с учетом кэша процентов (processingMap)
-        let statusHtml = '';
+        // --- ГЕНЕРАЦИЯ СТАТУСА ---
+        let badgeHtml = '';
         if (v.status === 'processing') {
             const percent = processingMap[v.id];
-            if (percent) {
-                statusHtml = `<span style="color:orange; font-weight:bold;">⏳ Обработка: ${percent}%</span>`;
-            } else {
-                statusHtml = '<span style="color:orange">⏳ Processing...</span>';
-            }
+            badgeHtml = percent
+                ? `<span style="color:orange; font-weight:bold;">⏳ ${percent}%</span>`
+                : '<span style="color:orange">⏳ Processing...</span>';
         } else if (v.status === 'uploading') {
-            statusHtml = '<span style="color:#3498db">⬆️ Uploading...</span>';
+            badgeHtml = '<span style="color:#3498db">⬆️ Uploading...</span>';
         } else if (v.status === 'error') {
-            statusHtml = '<span style="color:red">❌ Error</span>';
+            badgeHtml = '<span style="color:red">❌ Error</span>';
         } else {
-            statusHtml = formatDuration(v.duration);
+            badgeHtml = formatDuration(v.duration);
+            // Добавляем размер файла, если есть
+            if (v.size_mb) {
+                badgeHtml += ` <span style="opacity:0.7; font-size:0.9em">(${v.size_mb} MB)</span>`;
+            }
         }
 
-        // Генерация кнопок (на случай смены прав или создания элемента)
+        // --- ГЕНЕРАЦИЯ ТАЙМЕРА ---
+        let ttlHtml = '';
+        if (isReady && v.last_played_at) {
+            ttlHtml = `<div class="ttl-timer" data-last-played="${v.last_played_at}"></div>`;
+        }
+
+        // HTML для блока статуса
+        const statusHtml = `
+            <div style="display:flex; justify-content:space-between; width:100%;">
+                <span>${badgeHtml}</span>
+                ${ttlHtml}
+            </div>
+        `;
+
+        // Кнопки действий
         const controlsHtml = (isOwner || isAllowedGuestControl) ? `
             <button class="btn-icon-action btn-edit" onclick="renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')">✏️</button>
             <button class="btn-icon-action btn-delete" onclick="deleteVideo(event, ${v.id})">×</button>
         ` : '';
 
         if (item) {
-            // --- ЭЛЕМЕНТ СУЩЕСТВУЕТ -> ОБНОВЛЯЕМ ---
+            // --- ОБНОВЛЕНИЕ СУЩЕСТВУЮЩЕГО ---
 
-            // 1. Класс Active
+            // Классы
             if (v.id === currentVideoId) item.classList.add('active');
             else item.classList.remove('active');
 
-            // 2. Класс Disabled и Click Handler
             if (!isReady) {
                 item.classList.add('disabled');
-                item.onclick = null; // Убираем клик, если не готово
+                item.onclick = null;
             } else {
                 item.classList.remove('disabled');
-                // Обновляем клик только если его не было (чтобы не пересоздавать функцию постоянно)
-                if (!item.onclick) {
-                    item.onclick = () => changeVideo(v.id);
-                }
+                if (!item.onclick) item.onclick = () => changeVideo(v.id);
             }
 
-            // 3. Текстовый контент (Заголовок)
+            // Заголовок
             const titleEl = item.querySelector('.video-title');
             if (titleEl && titleEl.textContent !== v.title) {
                 titleEl.textContent = v.title;
                 titleEl.title = v.title;
-                // Обновляем onclick кнопки rename, так как там зашит старый title
                 const editBtn = item.querySelector('.btn-edit');
-                if (editBtn) {
-                    editBtn.setAttribute('onclick', `renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')`);
-                }
+                if (editBtn) editBtn.setAttribute('onclick', `renameVideo(event, ${v.id}, '${v.title.replace(/'/g, "\\'")}')`);
             }
 
-            // 4. Статус (Прогресс)
+            // Статус
             const statusEl = item.querySelector('.video-status');
-            // Обновляем HTML только если он изменился, чтобы не сбивать анимации или выделение
             if (statusEl && statusEl.innerHTML !== statusHtml) {
                 statusEl.innerHTML = statusHtml;
             }
 
-            // 5. Кнопки действий (если права изменились динамически)
+            // Кнопки
             const actionsDiv = item.querySelector('.item-actions');
-             if (actionsDiv && actionsDiv.innerHTML !== controlsHtml) {
+            if (actionsDiv && actionsDiv.innerHTML !== controlsHtml) {
                 actionsDiv.innerHTML = controlsHtml;
             }
 
         } else {
-            // --- ЭЛЕМЕНТА НЕТ -> СОЗДАЕМ ---
+            // --- СОЗДАНИЕ НОВОГО ---
             const newItem = document.createElement('div');
             newItem.className = `video-item ${v.id === currentVideoId ? 'active' : ''} ${!isReady ? 'disabled' : ''}`;
             newItem.setAttribute('data-id', v.id);
-            if (isReady) {
-                newItem.onclick = () => changeVideo(v.id);
-            }
+            if (isReady) newItem.onclick = () => changeVideo(v.id);
 
             newItem.innerHTML = `
                 <div class="video-item-info">
@@ -1041,15 +1098,14 @@ function renderPlaylist(videos) {
         }
     });
 
-    // 3. Удаление видео, которых больше нет в списке
+    // 3. Очистка удаленных
     const currentItems = container.querySelectorAll('.video-item');
     currentItems.forEach(el => {
         const id = parseInt(el.getAttribute('data-id'));
-        if (!incomingIds.has(id)) {
-            el.remove();
-        }
+        if (!incomingIds.has(id)) el.remove();
     });
 
+    // 4. Расчета времени для таймеров
     updateTTLCounters();
 }
 
@@ -1262,27 +1318,15 @@ window.handleChatKey = function(e) {
     if (e.key === 'Enter') sendMessage();
 }
 
-function addSystemMessage(text) {
-    const container = document.getElementById('chat-messages');
-    if(!container) return;
-    const div = document.createElement('div');
-    div.className = 'system-message';
-    div.textContent = text;
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-}
-
 function cleanupViewers() {
     const now = Date.now();
-    const timeout = 10000; // 10 секунд
+    const timeout = 10000;
     let hasChanges = false;
 
     // Проходим по всем известным пользователям
     for (const sid in lastSeenMap) {
-        // Если прошло больше 10 сек с последнего обновления
         if (now - lastSeenMap[sid] > timeout) {
-
-            // Если это не я сам (на всякий случай, хотя я обновляюсь часто)
+            // Если это не я сам
             if (sid === socket.id) continue;
 
             // Удаляем из DOM

@@ -43,6 +43,17 @@
             <!-- Контейнер для всплывающих уведомлений внутри плеера (виден в Fullscreen) -->
             <div id="player-toasts" class="player-toasts"></div>
 
+            <!-- Меню настроек плеера -->
+            <div id="player-settings-popover" class="user-popover player-menu-popup" style="display:none;">
+                 <div class="popover-header">Настройки плеера</div>
+                 <div class="popover-actions">
+                     <label class="check-group" style="padding: 5px; cursor: pointer;">
+                         <input type="checkbox" id="chk-preload">
+                         <span>🚀 Force Preload</span>
+                     </label>
+                 </div>
+            </div>
+
             <!-- Слой управления (скрывается при бездействии через JS класс .user-idle) -->
             <div id="controls-layer" class="controls-layer">
 
@@ -108,17 +119,6 @@
             <button class="btn-icon" onclick="copyLink()" title="Копировать ссылку">🔗</button>
             <button class="btn-icon" onclick="location.href='/'" title="На главную">🏠</button>
             <button id="btn-settings" class="btn-icon" onclick="toggleSettings()" style="display:none;" title="Настройки комнаты">⚙️</button>
-
-            <!-- Меню предзагрузки (появляется при клике на шестеренку в плеере) -->
-            <div id="player-settings-popover" class="user-popover" style="display:none; bottom: 60px; right: 20px; top: auto; left: auto;">
-                 <div class="popover-header">Настройки плеера</div>
-                 <div class="popover-actions">
-                     <label class="check-group" style="padding: 5px; cursor: pointer;">
-                         <input type="checkbox" id="chk-preload">
-                         <span>🚀 Force Preload</span>
-                     </label>
-                 </div>
-            </div>
         </div>
 
         <!-- Остальной контент (зрители и настройки) без изменений -->
