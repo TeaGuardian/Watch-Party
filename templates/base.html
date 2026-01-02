@@ -24,12 +24,21 @@
             } catch (e) {}
         })();
     </script>
-    <!-- Подключаем основной CSS -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <!-- Цвет плашки Safari -->
+    <meta name="theme-color" content="#121212">
+    <!-- iOS, это веб-приложение -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Watch Party">
+    <!-- Иконка для iPhone (Apple Touch Icon) -->
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/android-chrome-192x192.png') }}">
+    <!-- основной CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <!-- Cropper.js для обрезки аватарок -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
-    <!-- hls.js для плеера (понадобится позже) -->
+    <!-- hls.js для плеера -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <!-- Socket.IO клиент -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
@@ -48,6 +57,26 @@
     <div class="main-wrapper">
         {% block content %}{% endblock %}
     </div>
+
+    {% if show_footer %}
+    <footer class="site-footer">
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="/policy">Правила</a>
+                <span class="sep">•</span>
+                <a href="https://t.me/South_Fox">Поддержка</a>
+            </div>
+            <div class="footer-info">
+                {% if config.VERSION %}
+                    <span>Watch Party [{{ config.VERSION }}] &copy; 2026</span>
+                {% else %}
+                    <span>Watch Party &copy; 2026</span>
+                {% endif %}
+                <span class="server-status"></span>
+            </div>
+        </div>
+    </footer>
+    {% endif %}
 
     <!-- Основной JS -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>

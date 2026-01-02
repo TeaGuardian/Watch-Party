@@ -22,6 +22,7 @@ logger.setLevel(logging.INFO)
 
 FLASK_INTERNAL_URL = "http://web_app:8000/api/internal"
 
+
 def send_progress_to_flask(room_uuid, video_id, percent):
     try:
         requests.post(f"{FLASK_INTERNAL_URL}/progress", json={
@@ -31,6 +32,7 @@ def send_progress_to_flask(room_uuid, video_id, percent):
         }, timeout=1) # Короткий таймаут, чтобы не тормозить процессинг
     except Exception as e:
         logger.warning(f"Failed to send progress to Flask: {e}")
+
 
 def send_refresh_to_flask(room_uuid):
     try:
@@ -101,7 +103,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
         command = [
             'ffmpeg', '-y',
             '-i', local_source_path,
-            '-threads', '0',
+            '-threads', '1', # выставить 0 для адаптивного (нужен мощный сервак)
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-crf', '24',
@@ -295,56 +297,101 @@ def delete_account_files_task(user_id: int):
         logger.error(f"Failed to delete files for user {user_id}")
 
 
+# ... existing imports ...
+
+@app.task(name='tasks.media.finalize_video_deletion')
+def finalize_video_deletion_task(video_id: int):
+    """
+    Финализирует удаление видео:
+    1. Проверяет хеши (shared content).
+    2. Удаляет физические файлы, если они больше никому не нужны.
+    3. Удаляет запись из БД.
+    """
+    logger.info(f"💀 Finalizing deletion for video {video_id}")
+    try:
+        video = Video.get_by_id(video_id)
+    except Exception:
+        logger.info(f"Video {video_id} already gone from DB.")
+        return
+
+    # Дополнительная защита: убедимся, что статус deleting (или error/queued, если вызываем при чистке)
+    if video.status not in ['deleting', 'error', 'uploading', 'queued']:
+        # Если видео 'ready', но мы здесь оказались — помечаем как deleting перед удалением
+        video.status = 'deleting'
+        video.save()
+
+    try:
+        file_hash = video.file_hash
+        room_uuid = str(video.room.uuid)
+
+        # Проверяем, есть ли ДРУГИЕ видео с таким же хешем, которые НЕ удаляются
+        # Мы исключаем текущее видео (video.id) из проверки
+        other_refs_count = Video.select().where(
+            (Video.file_hash == file_hash) &
+            (Video.id != video.id) &
+            (Video.status != 'deleting')  # Важно: не считаем другие "умирающие" видео за живые ссылки
+        ).count()
+
+        if other_refs_count == 0:
+            # Если ссылок нет — удаляем физически
+            if video.storage_path:
+                folder_path = os.path.dirname(video.storage_path)
+                # Защита от кривых путей
+                if folder_path and len(folder_path) > 10:
+                    if not folder_path.endswith('/'): folder_path += '/'
+
+                    logger.info(f"🗑️ Deleting physical files at {folder_path} (No other refs)")
+                    storage.delete_folder(folder_path)
+        else:
+            logger.info(f"♻️ Skipping physical deletion: used by {other_refs_count} active videos.")
+
+        # Удаляем запись БД
+        video.delete_instance()
+
+        # Уведомляем комнату, чтобы видео пропало из списка окончательно (если оно там еще висело)
+        send_refresh_to_flask(room_uuid)
+        logger.info(f"✅ Video {video_id} deleted successfully.")
+
+    except Exception as e:
+        logger.error(f"❌ Error finalizing video {video_id}: {e}")
+
+
 @app.task(name='tasks.media.cleanup_old_videos')
 def cleanup_old_videos_task():
+    """
+    Таймер смерти.
+    Находит просроченные видео, ставит статус 'deleting' и запускает финализацию.
+    """
     logger.info("Starting cleanup of old videos...")
     retention_hours = AppConfig.MAX_VIDEO_RETENTION_HOURS
     cutoff_time = datetime.now() - timedelta(hours=retention_hours)
 
+    # Ищем видео, которые 'ready' И старые
     old_videos = Video.select().where(
         (Video.last_played_at < cutoff_time) &
         (Video.status == 'ready')
     )
 
-    deleted_records = 0
-    deleted_files = 0
-    affected_rooms = set()
-
+    count = 0
     for video in old_videos:
         try:
-            file_hash = video.file_hash
-            room_uuid = str(video.room.uuid)
-            logger.info(f"Processing cleanup for video {video.id} (hash: {file_hash})")
-            other_refs_count = Video.select().where(
-                (Video.file_hash == file_hash) &
-                (Video.id != video.id)
-            ).count()
+            logger.info(f"⏳ Video {video.id} expired (Last played: {video.last_played_at}). marking as DELETING.")
 
-            if other_refs_count == 0:
-                if video.storage_path:
-                    folder_path = os.path.dirname(video.storage_path)
-                    if not folder_path.endswith('/'): folder_path += '/'
+            # 1. Сначала меняем статус, чтобы заблокировать доступ (API/Sockets)
+            video.status = 'deleting'
+            video.save()
 
-                    logger.info(f"Removing physical files at {folder_path}")
-                    if storage.delete_folder(folder_path):
-                        deleted_files += 1
-            else:
-                logger.info(f"Skipping physical deletion (used by {other_refs_count} others)")
-            video.delete_instance()
-            deleted_records += 1
-            affected_rooms.add(room_uuid)
+            # 2. Обновляем UI в комнате (видео станет недоступным визуально)
+            send_refresh_to_flask(str(video.room.uuid))
 
+            # 3. Ставим задачу на физическое удаление
+            finalize_video_deletion_task.delay(video.id)
+
+            count += 1
         except Exception as e:
-            logger.error(f"Error cleaning video {video.id}: {e}")
+            logger.error(f"Error marking video {video.id} for deletion: {e}")
 
-    for r_uuid in affected_rooms:
-        try:
-            # Шлем событие 'playlist_refresh' в комнату
-            send_refresh_to_flask(r_uuid)
-            logger.info(f"Notified room {r_uuid} about auto-deletion")
-        except Exception as e:
-            logger.error(f"Failed to emit socket to {r_uuid}: {e}")
-    logger.info(f"Cleanup finished. Records removed: {deleted_records}. File groups removed: {deleted_files}.")
+    logger.info(f"Cleanup scan finished. {count} videos queued for deletion.")
 
 
 @app.task(name='tasks.media.check_stuck_videos')

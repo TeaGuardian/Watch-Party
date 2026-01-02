@@ -28,6 +28,7 @@ app.conf.update(
         'tasks.media.daily_s3_garbage_collector': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.delete_storage_folder': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.delete_account_files': {'queue': CeleryConfig.QUEUE_FAST},
+        'tasks.media.finalize_video_deletion': {'queue': CeleryConfig.QUEUE_FAST},
     }
 )
 

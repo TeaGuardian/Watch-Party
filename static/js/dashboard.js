@@ -8,18 +8,28 @@ let easyMDE = null;
 document.addEventListener('DOMContentLoaded', async () => {
     await loadUserProfile();
 
-    // Если профиль загрузился, открываем первую вкладку или показываем блок ограничения
+    const urlParams = new URLSearchParams(window.location.search);
+    const requestedTab = urlParams.get('tab');
+
     if (currentUser) {
-        if (canAccessContent()) {
-            openTab('news'); // По умолчанию новости
+        if (requestedTab === 'profile') {
+            openTab('profile');
+        } else if (canAccessContent()) {
+            openTab('news');
         } else {
-            openTab('profile'); // Иначе профиль
+            openTab('profile');
         }
+
         if (currentUser.role === 'admin') {
             initMarkdownEditor();
         }
     }
+
+    if (requestedTab) {
+        window.history.replaceState({}, document.title, "/");
+    }
 });
+
 
 function initMarkdownEditor() {
     const textArea = document.getElementById('new-post-content');
@@ -73,8 +83,12 @@ async function loadUserProfile() {
 }
 
 function canAccessContent() {
-    return currentUser && (currentUser.status === 'approved' || currentUser.role === 'admin');
-}
+    return currentUser && (
+        currentUser.status === 'approved' ||
+        currentUser.status === 'tg_verified' ||
+        currentUser.role === 'admin'
+    );
+
 
 // --- Tabs Logic ---
 function openTab(tabName) {
@@ -633,7 +647,15 @@ async function createRoom() {
             loadRooms();
         } else {
             const data = await res.json();
-            showError(data.error || 'Ошибка');
+            if (res.status === 403) {
+                if (data.error.includes('Wait')) {
+                     showError('Создание комнат доступно после одобрения администратором.');
+                } else {
+                     showError('Сначала привяжите Telegram в профиле.');
+                }
+            } else {
+                showError(data.error || 'Ошибка');
+            }
         }
     } catch(e) { showError('Ошибка сети'); }
 }

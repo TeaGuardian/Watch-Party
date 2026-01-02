@@ -1,4 +1,9 @@
 /* #/static/css/style.css */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
 /* --- 1. CSS VARIABLES (THEME ENGINE) --- */
 :root {
     /* Dark Theme (Now Default) */
@@ -40,7 +45,9 @@ body {
     background-color: var(--bg-body);
     color: var(--text-main);
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
+
     min-height: 100vh;
     transition: background-color 0.3s, color 0.3s;
 }
@@ -309,3 +316,34 @@ body {
     height: 16px;
     cursor: pointer;
 }
+
+/* Футтер */
+.site-footer {
+    width: 100%;
+    padding: 20px 0;
+    margin-top: auto; /* Прижмет футер к низу, если контента мало */
+    border-top: 1px solid var(--border-color);
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.footer-content {
+    max-width: 600px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.footer-links a {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.footer-links a:hover {
+    color: var(--primary-color);
+}
+
+.sep { margin: 0 8px; opacity: 0.3; }

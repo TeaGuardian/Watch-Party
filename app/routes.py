@@ -25,7 +25,7 @@ from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchS
 from core.cache import get_cache, set_cache, delete_cache
 from core.validators import validate_password_strength
 from config import BotConfig, AppConfig, CeleryConfig
-from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task
+from tasks.media import process_video_task, delete_storage_folder_task, delete_account_files_task, finalize_video_deletion_task
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -503,7 +503,8 @@ def get_rooms(current_user):
 def create_room(current_user):
     # 1. Проверяем, одобрен ли аккаунт
     if current_user.status not in ['approved', 'admin']:
-        return jsonify({'error': 'Wait for admin approval'}), 403
+        msg = 'Wait for admin approval' if current_user.status == 'tg_verified' else 'Link Telegram first'
+        return jsonify({'error': msg, 'code': 'forbidden'}), 403
 
     current_count = Room.select().where(Room.owner == current_user).count()
     if current_count >= AppConfig.MAX_ROOMS_COUNT:
@@ -587,7 +588,7 @@ def get_room_details(current_user, room_uuid):
             'is_owner': is_owner,
             'is_private': room.is_private,
             'allow_guest_control': room.allow_guest_control,
-            'has_voice_chat': room.has_voice_chat,  # [NEW]
+            'has_voice_chat': room.has_voice_chat,
             'has_access': True
         })
 
@@ -760,6 +761,11 @@ def revoke_room_access(current_user, room_uuid, user_id):
 @login_required
 def upload_video(current_user, room_uuid):
     """Загрузка видеофайла"""
+    if current_user.status != 'approved' and current_user.role != 'admin':
+        if current_user.status == 'tg_verified':
+            return jsonify({'error': 'Дождитесь подтверждения профиля администратором для загрузки файлов'}), 403
+        else:
+            return jsonify({'error': 'Привяжите Telegram и дождитесь одобрения для загрузки'}), 403
     try:
         room = Room.get(Room.uuid == room_uuid)
         if room.owner != current_user and not room.allow_guest_control:
@@ -807,7 +813,9 @@ def upload_video(current_user, room_uuid):
 
     # 4.1 Проверяем дубли ВНУТРИ комнаты (запрещаем)
     duplicate_in_room = Video.select().where(
-        (Video.room == room) & (Video.file_hash == file_hash)
+        (Video.room == room) &
+        (Video.file_hash == file_hash) &
+        (Video.status != 'deleting')
     ).exists()
 
     if duplicate_in_room:
@@ -886,14 +894,18 @@ def upload_video(current_user, room_uuid):
 def delete_video(current_user, video_id):
     try:
         video = Video.get_by_id(video_id)
+        if video.status == 'deleting':
+            return jsonify({'error': 'Video is already being deleted'}), 400
         if video.room.owner != current_user and not video.room.allow_guest_control:
             return jsonify({'error': 'Access denied'}), 403
 
         room_uuid = video.room.uuid
         room_uuid_str = str(room_uuid)
+        video.status = 'deleting'
+        video.save()
         file_hash = video.file_hash
 
-        # --- [NEW] Проверка: Играет ли это видео сейчас? ---
+        # --- Проверка: Играет ли это видео сейчас? ---
         from app.sockets import ROOM_STATE
         if room_uuid_str in ROOM_STATE:
             current_state = ROOM_STATE[room_uuid_str]
@@ -916,7 +928,7 @@ def delete_video(current_user, video_id):
                 if not folder_to_delete.endswith('/'): folder_to_delete += '/'
                 delete_storage_folder_task.delay(folder_to_delete)
 
-        video.delete_instance()
+        finalize_video_deletion_task.delay(video.id)
 
         socketio.emit('playlist_refresh', {}, to=room_uuid_str)
         return jsonify({'success': True})
@@ -931,6 +943,8 @@ def rename_video(current_user, video_id):
     """Переименование видео"""
     try:
         video = Video.get_by_id(video_id)
+        if video.status == 'deleting':
+            return jsonify({'error': 'Cannot rename deleting video'}), 400
         if video.room.owner != current_user and not video.room.allow_guest_control:
             return jsonify({'error': 'Access denied'}), 403
 
@@ -986,7 +1000,8 @@ def get_admin_stats(current_user):
         'ready': Video.select().where(Video.status == 'ready').count(),
         'processing': Video.select().where(Video.status == 'processing').count(),
         'uploading': Video.select().where(Video.status == 'uploading').count(),
-        'error': Video.select().where(Video.status == 'error').count()
+        'error': Video.select().where(Video.status == 'error').count(),
+        'queued': Video.select().where(Video.status == 'queued').count()
     }
 
     # 4. Нагрузка системы (Load Average) - работает на Linux/Mac

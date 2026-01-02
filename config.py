@@ -7,6 +7,7 @@ load_dotenv()
 
 
 class AppConfig:
+    VERSION = "1.0.4-beta (02.01.2026)"
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-it")
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     UPLOAD_FOLDER = os.path.join(BASE_DIR, "storage", "uploads")

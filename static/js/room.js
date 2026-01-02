@@ -44,7 +44,7 @@ let peersState = {}; // Состояние других участников д�
 let ignoreSyncEvents = false;
 let isUserIdle = false;
 let idleTimer = null;
-let forcePreload = false; // Состояние галочки предзагрузки
+let forcePreload = localStorage.getItem('player_force_preload') === 'true';
 let pollInterval = null;
 let isPlayPending = false; // Защита от AbortError
 
@@ -67,6 +67,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadRoomData(); // Периодическое обновление списка
     }, 5 * 60 * 1000);
 });
+
+window.closeAuthModal = function() {
+    document.getElementById('auth-modal').style.display = 'none';
+}
+
+window.showAuthRestriction = function(type) {
+    const modal = document.getElementById('auth-modal');
+    const title = document.getElementById('auth-title');
+    const msg = document.getElementById('auth-message');
+    const icon = document.getElementById('auth-icon');
+    const actionBtn = document.getElementById('auth-action-btn');
+
+    modal.style.display = 'flex';
+
+    if (type === 'link_tg') {
+        icon.textContent = '✈️';
+        title.textContent = 'Требуется Telegram';
+        msg.innerHTML = 'Чтобы загружать видео и создавать комнаты, необходимо <b>привязать Telegram</b> к аккаунту для верификации.';
+
+        actionBtn.textContent = 'Привязать в профиле';
+        actionBtn.onclick = () => {
+            window.location.href = '/?tab=profile';
+        };
+        actionBtn.style.display = 'block';
+
+    } else if (type === 'wait_admin') {
+        icon.textContent = '⏳';
+        title.textContent = 'Ожидание проверки';
+        msg.innerHTML = 'Вы успешно привязали Telegram!<br>Теперь <b>дождитесь одобрения администратором</b>, чтобы получить доступ к загрузке.';
+
+        actionBtn.textContent = 'Понятно';
+        actionBtn.onclick = closeAuthModal;
+        actionBtn.className = 'btn btn-primary';
+    }
+}
 
 function initUIReferences() {
     ui.wrapper = document.getElementById('player-wrapper');
@@ -107,8 +142,12 @@ function initUIReferences() {
     // 2. Force Preload
     const chkPreload = document.getElementById('chk-preload');
     if (chkPreload) {
+        chkPreload.checked = forcePreload;
+
         chkPreload.addEventListener('change', (e) => {
             forcePreload = e.target.checked;
+            localStorage.setItem('player_force_preload', forcePreload);
+
             console.log("Preload setting changed:", forcePreload);
 
             if (hls) {
@@ -175,7 +214,7 @@ async function loadRoomData() {
         renderPlaylist(data.videos);
 
         // Авто-обновление статусов обработки (polling)
-        const hasProcessing = data.videos.some(v => v.status === 'processing' || v.status === 'uploading');
+        const hasProcessing = data.videos.some(v => v.status === 'processing' || v.status === 'uploading' || v.status === 'queued' || v.status === 'deleting');
         if (hasProcessing) {
             if (!pollInterval) pollInterval = setInterval(loadRoomData, 3000);
         } else {
@@ -267,6 +306,22 @@ function stopScrubDrag(e) {
 /* --- CUSTOM PLAYER LOGIC --- */
 
 function setupCustomPlayer() {
+    const savedVol = localStorage.getItem('player_volume');
+    const savedMuted = localStorage.getItem('player_muted');
+
+    if (savedVol !== null) {
+        // Проверяем, есть ли ползунок в DOM (как просили в условии, хотя он обычно есть всегда, просто скрыт CSS)
+        if (ui.volSlider) {
+            player.volume = parseFloat(savedVol);
+            ui.volSlider.value = parseFloat(savedVol);
+        }
+    }
+
+    if (savedMuted === 'true') {
+        player.muted = true;
+        // Обновляем кнопку мута визуально
+        ui.muteBtn.style.opacity = '0.5';
+    }
     // 1. Play/Pause
     ui.playBtn.addEventListener('click', togglePlay);
     ui.wrapper.addEventListener('click', (e) => {
@@ -313,13 +368,7 @@ function setupCustomPlayer() {
     });
 
     // 3. Fullscreen
-    ui.fullscreenBtn.addEventListener('click', () => {
-        if (!document.fullscreenElement) {
-            ui.wrapper.requestFullscreen().catch(err => console.log(err));
-        } else {
-            document.exitFullscreen();
-        }
-    });
+    ui.fullscreenBtn.addEventListener('click', toggleFullscreenLogic);
 
     // 4. PiP
     if (document.pictureInPictureEnabled) {
@@ -335,18 +384,89 @@ function setupCustomPlayer() {
     }
 
     // 5. Timeline Drag Logic
+    // Мышь
     ui.timeline.addEventListener('mousedown', startScrubDrag);
+    // Тач (для телефонов)
+    ui.timeline.addEventListener('touchstart', (e) => {
+        // Предотвращаем скролл страницы, пока тянем ползунок
+        e.preventDefault();
+        startScrubDrag(e.touches[0]);
+    }, { passive: false });
+
+    ui.timeline.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        handleScrubMove(e.touches[0]);
+    }, { passive: false });
+
+    ui.timeline.addEventListener('touchend', (e) => {
+        // e.changedTouches содержит точку, где палец оторвался
+        stopScrubDrag(e.changedTouches[0]);
+    });
+
+    let lastTapTime = 0;
+    let lastTapSide = null; // 'left' | 'right' | null
+    let tapTimeout = null;
 
     // 6. Idle Detection
     ui.wrapper.addEventListener('mousemove', resetIdleTimer);
-    ui.wrapper.addEventListener('click', resetIdleTimer);
+    ui.wrapper.addEventListener('click', (e) => {
+        // Игнорируем клики по контролам
+        if (ui.controls.contains(e.target) ||
+            document.getElementById('player-settings-popover')?.contains(e.target) ||
+            e.target.closest('.player-toast')) {
+            return;
+        }
+
+        const now = Date.now();
+        const rect = ui.wrapper.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const width = rect.width;
+
+        let side = 'center';
+        if (x < width * 0.2) side = 'left';
+        else if (x > width * 0.8) side = 'right';
+
+        // Логика двойного тапа
+        if ((now - lastTapTime < 300) && (lastTapSide === side) && (side !== 'center')) {
+            // двойной тап!
+            clearTimeout(tapTimeout); // Отменяем одиночный клик (паузу)
+
+            if (side === 'left') {
+                handleDoubleTapSeek(-10, '⏪ -10s', rect);
+            } else {
+                handleDoubleTapSeek(10, '⏩ +10s', rect);
+            }
+
+            lastTapTime = 0; // Сброс
+            return;
+        }
+
+        // Запоминаем этот тап
+        lastTapTime = now;
+        lastTapSide = side;
+
+        // Отложенный одиночный клик (чтобы подождать, не будет ли второго тапа)
+        // Если клик по центру - реагируем сразу, иначе ждем 300мс
+        if (side === 'center') {
+             resetIdleTimer();
+        } else {
+            tapTimeout = setTimeout(() => {
+                resetIdleTimer();
+            }, 300);
+        }
+    });
 
     // 7. Video Events
     player.addEventListener('timeupdate', updateTimelineUI);
     player.addEventListener('play', updatePlayIcon);
     player.addEventListener('pause', updatePlayIcon);
-    player.addEventListener('volumechange', updateVolumeUI);
+    player.addEventListener('volumechange', () => {
+        localStorage.setItem('player_volume', player.volume);
+        updateVolumeUI();
+    });
     player.addEventListener('progress', updateBufferUI);
+
+
 }
 
 // Обертка для Play, чтобы избежать AbortError при частых переключениях
@@ -374,6 +494,52 @@ function togglePlay() {
             socket.emit('sync_action', { room_uuid: ROOM_UUID, action: 'pause', timestamp: player.currentTime });
         }
     }
+}
+
+function handleDoubleTapSeek(seconds, text, rect) {
+    if (!player.duration) return;
+
+    // 1. Перемотка
+    const newTime = player.currentTime + seconds;
+    player.currentTime = Math.max(0, Math.min(player.duration, newTime));
+
+    // Синхронизация
+    if (!ignoreSyncEvents && socket) {
+        socket.emit('sync_action', {
+            room_uuid: ROOM_UUID,
+            action: 'seek',
+            timestamp: player.currentTime
+        });
+    }
+
+    // 2. Визуализация (Ripple Effect)
+    const ripple = document.createElement('div');
+    ripple.className = 'seek-ripple';
+    ripple.textContent = text;
+
+    const size = rect.height * 0.8;
+    ripple.style.width = `${size}px`;
+    ripple.style.height = `${size}px`;
+
+    // Позиция: Слева или Справа
+    if (seconds < 0) {
+        ripple.style.left = `-${size}px`;
+    } else {
+        ripple.style.right = `-${size}px`;
+        ripple.style.left = 'auto';
+    }
+
+    ui.wrapper.appendChild(ripple);
+
+    // Запуск анимации
+    requestAnimationFrame(() => {
+        ripple.classList.add('animate');
+    });
+
+    // Удаление
+    setTimeout(() => {
+        ripple.remove();
+    }, 500);
 }
 
 function updatePlayIcon() {
@@ -427,6 +593,68 @@ function resetIdleTimer() {
             ui.wrapper.classList.add('user-idle');
         }, 3000);
     }
+}
+
+/* --- KEYBOARD CONTROLS --- */
+
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        // 1. Игнорируем, если фокус на поле ввода (чат, настройки)
+        const tag = document.activeElement.tagName.toLowerCase();
+        const isInput = tag === 'input' || tag === 'textarea' || document.activeElement.isContentEditable;
+        if (isInput) return;
+
+        // 2. Обработка клавиш
+        switch(e.key.toLowerCase()) {
+            // F - Fullscreen
+            case 'f':
+                e.preventDefault();
+                toggleFullscreenLogic();
+                break;
+
+            // K или Пробел - Play/Pause
+            case 'k':
+            case ' ':
+                e.preventDefault(); // Чтобы пробел не скроллил страницу
+                togglePlay();
+                // Для визуального отклика вызываем сброс таймера бездействия
+                resetIdleTimer();
+                break;
+
+            // Стрелка влево - Назад 10 сек
+            case 'arrowleft':
+                e.preventDefault();
+                triggerSeekFromKeyboard(-10, '⏪ -10s');
+                break;
+
+            // Стрелка вправо - Вперед 10 сек
+            case 'arrowright':
+                e.preventDefault();
+                triggerSeekFromKeyboard(10, '⏩ +10s');
+                break;
+
+            // M - Mute (Бонус)
+            case 'm':
+                e.preventDefault();
+                ui.muteBtn.click();
+                break;
+        }
+    });
+}
+
+function toggleFullscreenLogic() {
+    if (!document.fullscreenElement) {
+        ui.wrapper.requestFullscreen().catch(err => console.log(err));
+    } else {
+        document.exitFullscreen();
+    }
+}
+
+function triggerSeekFromKeyboard(seconds, text) {
+    if (!player.duration) return;
+    const rect = ui.wrapper.getBoundingClientRect();
+    handleDoubleTapSeek(seconds, text, rect);
+    resetIdleTimer();
 }
 
 /* --- SETTINGS AREA LOGIC --- */
@@ -890,10 +1118,16 @@ function loadSource(url, startTime=0, startPaused=true) {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
 
+            updateBufferUI();
+
             if (!startPaused) {
                 console.log("[Player] Auto-starting playback...");
                 safePlay();
             }
+        });
+
+        hls.on(Hls.Events.BUFFER_APPENDED, function() {
+            updateBufferUI();
         });
 
         hls.on(Hls.Events.ERROR, (e, data) => {
@@ -909,15 +1143,20 @@ function loadSource(url, startTime=0, startPaused=true) {
         player.addEventListener('loadedmetadata', function() {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
+
+            updateBufferUI();
             if (!startPaused) safePlay();
         }, {once: true});
+        player.addEventListener('progress', updateBufferUI);
+
     } else {
-        // Fallback MP4
         player.src = url;
         player.load();
         player.addEventListener('loadedmetadata', function() {
             if (overlay) overlay.style.display = 'none';
             if (startTime > 0) player.currentTime = startTime;
+
+            updateBufferUI();
             if (!startPaused) safePlay();
         }, {once: true});
     }
@@ -1025,7 +1264,7 @@ function renderPlaylist(videos) {
 
     // 1. Обработка пустого списка
     if (videos.length === 0) {
-        container.innerHTML = '<div class="empty-state">Нет видео</div>';
+        container.innerHTML = '<div class="empty-state">Нет видео, нужно добавить!</div>';
         return;
     }
 
@@ -1051,6 +1290,10 @@ function renderPlaylist(videos) {
             badgeHtml = '<span style="color:#3498db">⬆️ Uploading...</span>';
         } else if (v.status === 'error') {
             badgeHtml = '<span style="color:red">❌ Error</span>';
+        } else if (v.status === 'queued') {
+            badgeHtml = '<span style="color:orange">📋🐾 В очереди</span>'
+        } else if (v.status === 'deleting') {
+            badgeHtml = '<span style="color:orange">🗑 Удаляем, уже не спасти</span>'
         } else {
             badgeHtml = formatDuration(v.duration);
             // Добавляем размер файла, если есть
@@ -1156,7 +1399,18 @@ function formatDuration(sec) {
 }
 
 // Стандартные функции плеера
-window.triggerUpload = function() { document.getElementById('file-upload').click(); }
+window.triggerUpload = function() {
+    if (USER_ROLE !== 'admin' && USER_STATUS !== 'approved') {
+        if (USER_STATUS === 'tg_verified') {
+            showAuthRestriction('wait_admin');
+        } else {
+            showAuthRestriction('link_tg');
+        }
+        return;
+    }
+
+    document.getElementById('file-upload').click();
+}
 window.changeVideo = function(id) {
     console.log(`[Click] Video ID: ${id}. Permissions -> Owner: ${isOwner}, GuestAllowed: ${isAllowedGuestControl}`);
 

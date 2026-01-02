@@ -186,10 +186,28 @@
 
 </div>
 
+<div id="auth-modal" class="modal-overlay" style="display: none; z-index: 10001;">
+    <div class="modal-card auth-modal-card">
+        <div class="auth-icon-wrapper">
+            <div id="auth-icon" class="auth-icon">🔒</div>
+        </div>
+        <h3 id="auth-title" class="auth-title">Доступ ограничен</h3>
+        <p id="auth-message" class="auth-message">
+            Для выполнения этого действия необходимы дополнительные права.
+        </p>
+        <div class="modal-actions centered-actions">
+            <button id="auth-action-btn" class="btn btn-primary">Перейти в профиль</button>
+            <button class="btn btn-secondary" onclick="closeAuthModal()">Закрыть</button>
+        </div>
+    </div>
+</div>
+
 <script>
     const ROOM_UUID = "{{ room_uuid }}";
     const MAX_VIDEO_SIZE = {{ max_video_size }};
     const RETENTION_HOURS = {{ video_retention_hours }};
+    const USER_STATUS = "{{ current_user.status }}";
+    const USER_ROLE = "{{ current_user.role }}";
 </script>
 {% endblock %}
 

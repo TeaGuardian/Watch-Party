@@ -14,6 +14,8 @@ services:
       # Тома для SSL
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
+      # для кэширования
+      - ./static:/app/static
     depends_on:
       - web
       - voice_service
@@ -31,6 +33,28 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=6"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "effective_cache_size=256MB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "temp_file_limit=1GB"
+      - "-c"
+      - "idle_in_transaction_session_timeout=10s"
+      - "-c"
+      - "lock_timeout=1s"
+      - "-c"
+      - "statement_timeout=30s"
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -100,7 +124,6 @@ services:
     depends_on:
       - postgres
       - redis
-    # Запускаем наш новый скрипт
     command: python run_bot.py
     deploy:
       resources:
@@ -147,7 +170,7 @@ services:
       - minio
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: celery -A tasks.celery_app worker -Q fast_queue -c ${FAST_WORKER_CONCURRENCY:-3} --loglevel=info
+    command: celery -A tasks.celery_app worker -Q fast_queue -c ${FAST_WORKER_CONCURRENCY:-2} --loglevel=info
     deploy:
       resources:
         limits:
@@ -172,7 +195,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.2'
+          cpus: '1'
           memory: 1024M
 
   # --- 8. Celery Beat (Планировщик - без изменений) ---
@@ -206,8 +229,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '0.1'
+          memory: 64M
 
   # --- Certbot (New) ---
   certbot:

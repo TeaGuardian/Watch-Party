@@ -910,3 +910,88 @@ video {
 .player-menu-popup label {
     color: #ddd;
 }
+
+/* --- MOBILE ADAPTATIONS --- */
+
+/* Анимация "пузыря" при двойном тапе */
+.seek-ripple {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%) scale(0);
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+    z-index: 25;
+    opacity: 0;
+    transition: transform 0.4s, opacity 0.4s;
+}
+
+.seek-ripple.animate {
+    transform: translateY(-50%) scale(1);
+    opacity: 1;
+}
+
+/* Адаптация под тач-скрины */
+@media (hover: none) and (pointer: coarse) {
+    /* Скрываем регулировку громкости на мобильных */
+    .volume-container {
+        display: none;
+    }
+}
+
+/* --- Auth/Permission Modal Styles --- */
+.auth-modal-card {
+    text-align: center;
+    max-width: 380px;
+    padding: 30px;
+    animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); /* Пружинистая анимация */
+}
+
+.auth-icon-wrapper {
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: center;
+}
+
+.auth-icon {
+    font-size: 48px;
+    line-height: 1;
+    animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+    0%, 20%, 50%, 80%, 100% {transform: translateY(0);}
+    40% {transform: translateY(-10px);}
+    60% {transform: translateY(-5px);}
+}
+
+.auth-title {
+    margin: 0 0 10px 0;
+    font-size: 20px;
+    color: var(--text-main);
+}
+
+.auth-message {
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1.5;
+    margin-bottom: 25px;
+}
+
+.centered-actions {
+    justify-content: center;
+    flex-direction: column; /* Кнопки друг под другом для мобилок */
+    gap: 10px;
+    width: 100%;
+}
+
+.centered-actions .btn {
+    width: 100%;
+    margin: 0;
+}

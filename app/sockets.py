@@ -459,6 +459,11 @@ def on_change_video(data):
             return
 
         video = Video.get_by_id(video_id)
+        if video.status == 'deleting':
+            emit('error', {'msg': 'Видео удаляется и недоступно'}, to=request.sid)
+            # Принудительно обновляем плейлист, чтобы убрать видео из UI
+            emit('playlist_refresh', {}, to=room_uuid)
+            return
         video.last_played_at = datetime.now()
         video.save()
 

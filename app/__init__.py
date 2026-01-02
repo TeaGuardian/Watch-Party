@@ -43,6 +43,19 @@ def create_app():
     # --- Peewee Connection Handling ---
     # Flask многопоточный, открываем/закрываем соединение для каждого запроса
 
+    @app.context_processor
+    def override_url_for():
+        return dict(url_for=versioned_url_for)
+
+    def versioned_url_for(endpoint, **values):
+        if endpoint == 'static':
+            filename = values.get('filename', None)
+            if filename:
+                file_path = os.path.join(app.root_path, endpoint, filename)
+                if os.path.isfile(file_path):
+                    values['v'] = int(os.stat(file_path).st_mtime)
+        return url_for(endpoint, **values)
+
     @app.before_request
     def before_request():
         if db.is_closed():
@@ -55,7 +68,7 @@ def create_app():
 
     @app.route('/')
     def index():
-        return render_template('index.html')
+        return render_template('index.html', config=AppConfig, show_footer=True)
 
     @app.route('/favicon.ico', methods=['GET'])
     def favicon():
@@ -63,11 +76,11 @@ def create_app():
 
     @app.route('/login')
     def login_page():
-        return render_template('login.html')
+        return render_template('login.html', config=AppConfig, show_footer=True)
 
     @app.route('/policy')
     def policy_page():
-        return render_template('policy.html', config=AppConfig)
+        return render_template('policy.html', config=AppConfig, show_footer=True)
 
     @app.route('/room/<uuid:room_uuid>')
     def room_page(room_uuid):
@@ -180,7 +193,7 @@ def create_app():
     @login_required
     @admin_required
     def admin_page(current_user):
-        return render_template('admin.html')
+        return render_template('admin.html', config=AppConfig, show_footer=True)
 
     from . import routes
 
