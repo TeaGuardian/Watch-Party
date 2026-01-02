@@ -20,7 +20,7 @@ services:
       - web
       - voice_service
     # Команда запуска: запускает Nginx и фоном каждые 6 часов просит его перезагрузить конфиги (чтобы подхватить новые серты)
-    command: '/bin/sh -c ''while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g "daemon off;"'''
+    command: '/bin/sh -c ''chmod -R 755 /app/static && while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g "daemon off;"'''
     deploy:
       resources:
         limits:
