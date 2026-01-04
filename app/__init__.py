@@ -6,12 +6,12 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from werkzeug.middleware.proxy_fix import ProxyFix
-from app.decorators import login_required, admin_required
+from app.decorators import login_required, admin_required, db_required
 from config import AppConfig, StorageConfig, RedisConfig
 from core.database import db
 from core.models import User, Room, Video
 
-# --- ИСПРАВЛЕНИЕ: Инициализация SocketIO только один раз ---
+# --- Инициализация SocketIO только один раз ---
 socketio = SocketIO(
     cors_allowed_origins="*",
     #message_queue=RedisConfig.URL,
@@ -56,8 +56,20 @@ def create_app():
                     values['v'] = int(os.stat(file_path).st_mtime)
         return url_for(endpoint, **values)
 
+    """
     @app.before_request
     def before_request():
+        # --- Игнорируем открытие БД для тяжелых или "пустых" роутов ---
+        # 1. 'static' - стандартная статика Flask
+        # 2. 'serve_content' - раздача видео файлов
+        # 3. 'api.internal_' - технические хуки
+        if request.endpoint and (
+                'static' in request.endpoint or
+                'serve_content' in request.endpoint or
+                'api.internal_' in request.endpoint
+        ):
+            return
+
         if db.is_closed():
             db.connect()
 
@@ -65,6 +77,7 @@ def create_app():
     def _db_close(exc):
         if not db.is_closed():
             db.close()
+    """
 
     @app.route('/')
     def index():
@@ -83,6 +96,7 @@ def create_app():
         return render_template('policy.html', config=AppConfig, show_footer=True)
 
     @app.route('/room/<uuid:room_uuid>')
+    @db_required
     def room_page(room_uuid):
         # 1. Сначала ищем комнату (нужна для мета-тегов)
         room = Room.get_or_none(Room.uuid == room_uuid)
@@ -190,6 +204,7 @@ def create_app():
         return send_from_directory(AppConfig.LOCAL_STORAGE_PATH, filename)
 
     @app.route('/admin')
+    @db_required
     @login_required
     @admin_required
     def admin_page(current_user):

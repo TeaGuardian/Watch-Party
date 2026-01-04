@@ -26,8 +26,24 @@ SID_TIMINGS = {}
 WATCH_SESSIONS = {}
 WATCH_BUFFER = {}
 
+SOCKET_CACHE = {}
+ROOM_CACHE = {}
+
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def with_db_connection(func, *args, **kwargs):
+    """Выполняет функцию внутри соединения с БД"""
+    if db.is_closed():
+        db.connect()
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        print(f"❌ DB Error in manual connection: {e}")
+    finally:
+        if not db.is_closed():
+            db.close()
+
 
 def db_session(f):
     @wraps(f)
@@ -134,12 +150,11 @@ def send_system_message(room_uuid, text):
 
 # --- АЛГОРИТМ ВЫБОРА ЛИДЕРА (SYNC) ---
 
-def elect_leader(room_uuid, room_obj):
+def elect_leader(room_uuid, owner_id, allow_guest_control):
     state = ROOM_STATE[room_uuid]
     now = time.time()
 
     try:
-        # Получаем список SID в комнате через менеджер SocketIO
         room_participants = socketio.server.manager.rooms.get('/', {}).get(room_uuid, set())
     except:
         room_participants = set()
@@ -149,14 +164,14 @@ def elect_leader(room_uuid, room_obj):
         return
 
     candidates = []
+    # Проверка "Владелец онлайн" (берем из стейта, который обновляется в heartbeat)
     owner_online = (now - state.get('owner_last_seen', 0)) < 10.0
 
-    # Строгий режим: если владелец задал настройки
-    strict_mode = not room_obj.allow_guest_control and (room_obj.owner_id is not None)
+    # Строгий режим: если гостям нельзя управлять и владелец задан
+    strict_mode = not allow_guest_control and (owner_id is not None)
 
     if strict_mode:
         if not owner_online:
-            # Если владельца нет, ставим паузу
             if not state['paused']:
                 state['paused'] = True
                 socketio.emit('sync_event', {'action': 'pause', 'timestamp': state['timestamp']}, to=room_uuid)
@@ -166,20 +181,24 @@ def elect_leader(room_uuid, room_obj):
 
         # Лидером может быть только владелец
         for sid in room_participants:
-            info = SID_MAP.get(sid)
-            if info and info[0] == room_obj.owner_id:
+            # Данные берем из кэша памяти, не из БД
+            user_data = SOCKET_CACHE.get(sid)
+            if user_data and user_data['user_id'] == owner_id:
                 metrics = SYNC_METRICS.get(sid, {'streak': 0})
                 candidates.append({'sid': sid, 'score': metrics.get('streak', 0)})
     else:
-        # Демократия: лидером становится тот, у кого лучший коннект (streak)
+        # Демократия
         for sid in room_participants:
             metrics = SYNC_METRICS.get(sid)
             if not metrics: continue
             if now - metrics['last_seen'] > 5.0: continue
 
             score = metrics['streak']
-            user_id = SID_MAP.get(sid, (0, 0))[0]
-            if user_id == room_obj.owner_id: score += 50  # Бонус владельцу
+            user_data = SOCKET_CACHE.get(sid)
+
+            # Бонус владельцу, если он тут
+            if user_data and user_data['user_id'] == owner_id:
+                score += 50
 
             candidates.append({'sid': sid, 'score': score})
 
@@ -190,7 +209,6 @@ def elect_leader(room_uuid, room_obj):
     best = candidates[0]
     current = state.get('leader_sid')
 
-    # Анти-дребезг смены лидера (меняем только если новый кандидат явно лучше)
     if current:
         curr_stats = next((c for c in candidates if c['sid'] == current), None)
         if curr_stats and curr_stats['score'] >= (best['score'] - 10):
@@ -198,7 +216,6 @@ def elect_leader(room_uuid, room_obj):
 
     if state['leader_sid'] != best['sid']:
         state['leader_sid'] = best['sid']
-        # print(f"👑 New Leader in {room_uuid}: {best['sid']}")
 
 
 # --- SOCKET EVENTS ---
@@ -207,20 +224,39 @@ def elect_leader(room_uuid, room_obj):
 @db_session
 def on_connect(*args, **kwargs):
     user = get_current_user()
+    # Сохраняем данные юзера в кэш
+    SOCKET_CACHE[request.sid] = {
+        'user_id': user.id,
+        'username': user.username,
+        'avatar': user.to_dict()['avatar_url']
+    }
     if user:
         join_room(f"user_{user.id}")
     # print(f"✅ Connect: {request.sid}")
 
 
 @socketio.on('disconnect')
+@db_session
 def on_disconnect():
-    track_connection_remove(request.sid)
+    sid = request.sid
+
+    # Спасаем статистику и чистим кэш
+    if sid in SOCKET_CACHE:
+        user_id = SOCKET_CACHE[sid]['user_id']
+        flush_buffer_to_db(user_id)
+        del SOCKET_CACHE[sid]
+
+    track_connection_remove(sid)
 
 
 @socketio.on('join')
 @db_session
 def on_join(data):
-    room_uuid = str(data.get('room_uuid'))  # Force string! Важно!
+    """
+    При входе загружаем данные из БД и кэшируем их в память (SOCKET_CACHE / ROOM_CACHE),
+    чтобы потом heartbeat мог работать без БД.
+    """
+    room_uuid = str(data.get('room_uuid'))
     user = get_current_user()
 
     if not user:
@@ -235,6 +271,13 @@ def on_join(data):
 
     try:
         room = Room.get(Room.uuid == room_uuid)
+
+        # Сохраняем настройки комнаты в кэш
+        ROOM_CACHE[room_uuid] = {
+            'owner_id': room.owner_id,
+            'allow_guest_control': room.allow_guest_control
+        }
+
         if RoomBan.select().where((RoomBan.room == room) & (RoomBan.user == user)).exists():
             emit('error', {'msg': 'Вы забанены'}, to=request.sid)
             return
@@ -246,6 +289,13 @@ def on_join(data):
         print(f"❌ Join Error: {e}")
         return
 
+    # Сохраняем данные юзера в кэш
+    SOCKET_CACHE[request.sid] = {
+        'user_id': user.id,
+        'username': user.username,
+        'avatar': user.to_dict()['avatar_url']
+    }
+
     SID_TIMINGS[request.sid] = datetime.now()
     join_room(room_uuid)
 
@@ -256,6 +306,7 @@ def on_join(data):
         'avatar': user.to_dict()['avatar_url']
     }, to=room_uuid)
 
+    # Восстановление стейта
     state = ROOM_STATE.get(room_uuid)
     if state:
         video_data = None
@@ -287,37 +338,52 @@ def on_leave(data):
 
 
 @socketio.on('heartbeat')
-@db_session
+# [ВАЖНО] УБРАЛИ @db_session. Эта функция теперь не трогает БД напрямую!
 def on_heartbeat(data):
-    user = get_current_user()
+    sid = request.sid
+
+    # 1. Достаем юзера из памяти
+    cached_user = SOCKET_CACHE.get(sid)
+    if not cached_user:
+        # Если сервера перезагрузили, кэш пуст.
+        # Можно попросить клиента сделать реконнект или просто игнорировать.
+        return
+
+    user_id = cached_user['user_id']
+    username = cached_user['username']
+    avatar = cached_user['avatar']
+
     room_uuid = str(data.get('room_uuid'))
     client_ts = float(data.get('timestamp', 0))
     client_state = data.get('state')
     buffered = float(data.get('buffered', 0))
 
-    if not user or not room_uuid: return
+    if not room_uuid: return
 
-    sid = request.sid
+    # 2. Достаем инфо о комнате из памяти
+    room_info = ROOM_CACHE.get(room_uuid)
+    if not room_info:
+        # Если нет в кэше, значит комната не инициализирована или стерлась.
+        # В крайнем случае можно сделать fallback к БД через with_db_connection,
+        # но для оптимизации лучше просто выйти.
+        return
+
     now = time.time()
     state = get_room_state_default(room_uuid)
 
-    try:
-        room = Room.get(Room.uuid == room_uuid)
-    except:
-        return
+    # --- Обновление метрик ---
 
     # 1. Метрики Владельца
-    if user.id == room.owner_id:
+    if user_id == room_info['owner_id']:
         state['owner_last_seen'] = now
 
-    # 2. Метрики Сокета (Streak - качество синхронизации)
+    # 2. Метрики Сокета (Streak)
     if sid not in SYNC_METRICS:
         SYNC_METRICS[sid] = {'streak': 0, 'last_seen': now}
 
     metric = SYNC_METRICS[sid]
     metric['last_seen'] = now
 
-    # Проверка "дрифта" времени для оценки качества клиента
     if client_state == 'playing' and not state['paused']:
         server_est = state['timestamp'] + (now - state['last_update'])
         diff = abs(client_ts - server_est)
@@ -326,8 +392,8 @@ def on_heartbeat(data):
         else:
             metric['streak'] = 0
 
-    # Выборы лидера
-    elect_leader(room_uuid, room)
+    # --- Выборы лидера (без БД) ---
+    elect_leader(room_uuid, room_info['owner_id'], room_info['allow_guest_control'])
 
     # Если мы лидер - обновляем глобальный стейт
     if state['leader_sid'] == sid:
@@ -335,39 +401,44 @@ def on_heartbeat(data):
         state['last_update'] = now
         state['paused'] = (client_state == 'paused')
 
-    # Аналитика просмотра (Watch Time)
+    # --- Аналитика просмотра (Watch Time) ---
     if client_state == 'playing':
         if sid not in WATCH_SESSIONS:
             WATCH_SESSIONS[sid] = {'start_ts': now, 'last_ts': now}
         else:
             s_data = WATCH_SESSIONS[sid]
+            # Защита от накрутки (проверяем, что прошло реальное время)
             if (now - s_data['start_ts']) > 10:
                 delta = now - s_data['last_ts']
-                if 0 < delta < 10:
-                    if user.id not in WATCH_BUFFER: WATCH_BUFFER[user.id] = 0
-                    WATCH_BUFFER[user.id] += int(delta)
-                    if WATCH_BUFFER[user.id] >= 60: flush_buffer_to_db(user.id)
+                if 0 < delta < 10:  # Валидная дельта
+                    if user_id not in WATCH_BUFFER: WATCH_BUFFER[user_id] = 0
+                    WATCH_BUFFER[user_id] += int(delta)
+
+                    # [ВАЖНО] Сбрасываем в БД только раз в минуту
+                    # И используем для этого отдельный коннект
+                    if WATCH_BUFFER[user_id] >= 60:
+                        with_db_connection(flush_buffer_to_db, user_id)
+
             s_data['last_ts'] = now
     else:
+        # Если нажал паузу - сбрасываем накопленное сразу
         if sid in WATCH_SESSIONS:
-            flush_buffer_to_db(user.id)
+            with_db_connection(flush_buffer_to_db, user_id)
             del WATCH_SESSIONS[sid]
 
-    # Подготовка данных для отправки обратно (Server Truth)
+    # --- Ответ клиенту ---
     server_time_now = state['timestamp']
     if not state['paused'] and state['leader_sid']:
         server_time_now += (now - state['last_update'])
 
-    # ВОТ ЭТОГО НЕ БЫЛО В ВАШЕМ ФАЙЛЕ:
     emit('status_update', {
-        'user_id': user.id,
-        'username': user.username,
-        'sid': request.sid,
+        'user_id': user_id,
+        'username': username,
+        'sid': sid,
         'state': client_state,
         'timestamp': client_ts,
         'buffered': buffered,
-        'avatar': user.to_dict()['avatar_url'],
-        # Критически важные поля для JS:
+        'avatar': avatar,
         'server_timestamp': server_time_now,
         'server_paused': state['paused'],
         'is_leader': (state['leader_sid'] == sid)

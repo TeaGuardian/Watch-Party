@@ -6,8 +6,8 @@ import logging
 import requests
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
-
 from tasks.celery_app import app
+from core.database import db
 from core.models import Video, Room
 from core.storage import storage
 import sys
@@ -79,7 +79,12 @@ def process_video_task(self, video_id: int, local_source_path: str):
     video.save()
 
     room_uuid = str(video.room.uuid)
+    is_owner_allow = video.room.owner_id
+    room_obj_uuid = video.room.uuid
     send_refresh_to_flask(room_uuid)
+    if not db.is_closed():
+        db.close()
+    logger.info("🔒 DB Connection released for transcoding duration")
 
     # Создаем временную папку
     transcode_dir = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode", str(uuid4()))
@@ -91,11 +96,13 @@ def process_video_task(self, video_id: int, local_source_path: str):
     try:
         # 1. Получаем длительность
         total_duration = get_video_duration(local_source_path)
+        """
         if total_duration > 0:
             video.duration = int(total_duration)
             video.save()
         else:
             logger.warning("Could not determine video duration, progress might be broken.")
+        """
 
         # 2. Формируем команду FFmpeg
         # -progress pipe:1 заставляет FFmpeg писать машиночитаемый статус в stdout
@@ -181,6 +188,14 @@ def process_video_task(self, video_id: int, local_source_path: str):
             raise Exception("FFmpeg process failed")
 
         logger.info("Transcoding finished successfully.")
+
+        if db.is_closed():
+            db.connect()
+        logger.info("🔓 DB Connection re-established for upload info")
+        video = Video.get_by_id(video_id)
+        if total_duration > 0:
+            video.duration = int(total_duration)
+            video.save()
 
         # 5. Перенос файлов в хранилище (S3 или Local)
         # Проверяем, не удалил ли юзер видео, пока мы рендерили

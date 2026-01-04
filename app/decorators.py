@@ -2,6 +2,7 @@
 from functools import wraps
 from flask import session, jsonify, redirect, Response
 from core.models import User
+from core.database import db
 
 
 def login_required(f):
@@ -40,4 +41,20 @@ def admin_required(f):
             return jsonify({'error': 'Admin access required'}), 403
         return f(current_user=current_user, *args, **kwargs)
 
+    return decorated_function
+
+
+def db_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 1. Открываем, если закрыто
+        if db.is_closed():
+            db.connect()
+        try:
+            # 2. Выполняем роут
+            return f(*args, **kwargs)
+        finally:
+            # 3. Гарантированно закрываем
+            if not db.is_closed():
+                db.close()
     return decorated_function

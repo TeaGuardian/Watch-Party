@@ -88,7 +88,7 @@ function canAccessContent() {
         currentUser.status === 'tg_verified' ||
         currentUser.role === 'admin'
     );
-
+}
 
 // --- Tabs Logic ---
 function openTab(tabName) {

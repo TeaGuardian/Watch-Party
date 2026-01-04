@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     player = document.getElementById('video-player');
     initUIReferences();
     setupCustomPlayer();
+    setupKeyboardShortcuts();
     initSettingsInteractionTracker();
     await loadUserInfo();
     await loadRoomData();

@@ -18,7 +18,7 @@ from werkzeug.utils import secure_filename
 from peewee import fn
 from core.storage import storage
 from . import socketio
-from .decorators import login_required, admin_required
+from .decorators import login_required, admin_required, db_required
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.models import Room, Video, NewsPost, User, RoomAccess, db, DailyWatchStat
@@ -46,6 +46,7 @@ def calculate_file_hash(file_stream):
 
 
 @api.route('/internal/progress', methods=['POST'])
+@db_required
 def internal_progress_hook():
     """
     Этот роут вызывает Celery, чтобы уведомить Flask о прогрессе.
@@ -91,7 +92,7 @@ def internal_refresh_hook():
 @api.route('/captcha', methods=['GET'])
 def get_captcha():
     # 1. Генерируем случайный текст (4 символа, цифры и буквы)
-    code = ''.join(random.choices('WTRFYKVNMXZAQH' + string.digits, k=4))
+    code = ''.join(random.choices('WTRFYKVNMXZAQH' + "123456789", k=4))
 
     # 2. Сохраняем в сессию (чтобы потом проверить)
     session['captcha_code'] = code
@@ -105,6 +106,7 @@ def get_captcha():
 
 
 @api.route('/register', methods=['POST'])
+@db_required
 def register():
     data = request.json or {}
     username = data.get('username')
@@ -143,6 +145,7 @@ def register():
 
 
 @api.route('/login', methods=['POST'])
+@db_required
 def login():
     data = request.json or {}
     username = data.get('username')
@@ -184,6 +187,7 @@ def logout():
 # --- PROFILE & TG ---
 
 @api.route('/me', methods=['GET'])
+@db_required
 @login_required
 def get_me(current_user: User):
     """Получение состояния текущего пользователя"""
@@ -200,6 +204,7 @@ def get_me(current_user: User):
 
 
 @api.route('/me/stats', methods=['GET'])
+@db_required
 @login_required
 def get_my_stats(current_user):
     """
@@ -255,6 +260,7 @@ def get_my_stats(current_user):
 
 
 @api.route('/tg_link', methods=['GET'])
+@db_required
 @login_required
 def get_tg_link(current_user: User):
     """Генерация ссылки на бота"""
@@ -281,6 +287,7 @@ def get_tg_link(current_user: User):
 
 
 @api.route('/tg_link', methods=['DELETE'])
+@db_required
 @login_required
 def unlink_telegram(current_user):
     """Отвязка Telegram со стороны сайта"""
@@ -305,6 +312,7 @@ def unlink_telegram(current_user):
 
 
 @api.route('/account', methods=['DELETE'])
+@db_required
 @login_required
 def delete_account(current_user):
     """Удаление аккаунта с очисткой общих файлов"""
@@ -342,6 +350,7 @@ def delete_account(current_user):
 
 
 @api.route('/profile/avatar', methods=['POST'])
+@db_required
 @login_required
 def upload_avatar(current_user):
     if 'avatar' not in request.files:
@@ -371,6 +380,7 @@ def upload_avatar(current_user):
 
 
 @api.route('/profile/avatar', methods=['DELETE'])
+@db_required
 @login_required
 def delete_avatar(current_user):
     if current_user.avatar_path:
@@ -390,12 +400,14 @@ def delete_avatar(current_user):
 
 
 @api.route('/news', methods=['GET'])
+@db_required
 def get_news():
     posts = NewsPost.select().order_by(NewsPost.created_at.desc()).limit(10)
     return jsonify({'success': True, 'news': [p.to_dict() for p in posts]})
 
 
 @api.route('/news', methods=['POST'])
+@db_required
 @login_required
 @admin_required
 def create_news(current_user):
@@ -409,6 +421,7 @@ def create_news(current_user):
 
 
 @api.route('/news/<int:post_id>', methods=['PUT'])
+@db_required
 @login_required
 def update_news(current_user, post_id):
     """Редактирование новости"""
@@ -438,6 +451,7 @@ def update_news(current_user, post_id):
 
 
 @api.route('/rooms', methods=['GET'])
+@db_required
 @login_required
 def get_rooms(current_user):
     """Список: Мои комнаты + Гостевые комнаты"""
@@ -499,6 +513,7 @@ def get_rooms(current_user):
 
 
 @api.route('/rooms', methods=['POST'])
+@db_required
 @login_required
 def create_room(current_user):
     # 1. Проверяем, одобрен ли аккаунт
@@ -542,6 +557,7 @@ def create_room(current_user):
 
 
 @api.route('/rooms/<uuid:room_uuid>', methods=['GET'])
+@db_required
 @login_required
 def get_room_details(current_user, room_uuid):
     try:
@@ -597,6 +613,7 @@ def get_room_details(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>', methods=['DELETE'])
+@db_required
 @login_required
 def delete_room(current_user, room_uuid):
     try:
@@ -616,6 +633,7 @@ def delete_room(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>', methods=['PUT'])
+@db_required
 @login_required
 def update_room_settings(current_user, room_uuid):
     try:
@@ -644,6 +662,7 @@ def update_room_settings(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>/leave', methods=['DELETE'])
+@db_required
 @login_required
 def leave_room(current_user, room_uuid):
     """Покинуть чужую комнату (удалить себя из RoomAccess)"""
@@ -669,6 +688,7 @@ def leave_room(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>/bans', methods=['GET'])
+@db_required
 @login_required
 def get_room_bans(current_user, room_uuid):
     """Список забаненных"""
@@ -684,6 +704,7 @@ def get_room_bans(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>/bans', methods=['POST'])
+@db_required
 @login_required
 def ban_user_in_room(current_user, room_uuid):
     """Забанить пользователя"""
@@ -705,6 +726,7 @@ def ban_user_in_room(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>/bans/<int:user_id>', methods=['DELETE'])
+@db_required
 @login_required
 def unban_user_in_room(current_user, room_uuid, user_id):
     """Разбанить"""
@@ -720,6 +742,7 @@ def unban_user_in_room(current_user, room_uuid, user_id):
 
 
 @api.route('/rooms/<uuid:room_uuid>/access', methods=['GET'])
+@db_required
 @login_required
 def get_room_access_list(current_user, room_uuid):
     """Список тех, кому разрешен вход (для приватных комнат)"""
@@ -737,6 +760,7 @@ def get_room_access_list(current_user, room_uuid):
 
 
 @api.route('/rooms/<uuid:room_uuid>/access/<int:user_id>', methods=['DELETE'])
+@db_required
 @login_required
 def revoke_room_access(current_user, room_uuid, user_id):
     """Удалить из списка доступа"""
@@ -758,6 +782,7 @@ def revoke_room_access(current_user, room_uuid, user_id):
 # --- ВИДЕО И ЗАГРУЗКА ---
 
 @api.route('/rooms/<uuid:room_uuid>/upload', methods=['POST'])
+@db_required
 @login_required
 def upload_video(current_user, room_uuid):
     """Загрузка видеофайла"""
@@ -890,6 +915,7 @@ def upload_video(current_user, room_uuid):
 
 
 @api.route('/videos/<int:video_id>', methods=['DELETE'])
+@db_required
 @login_required
 def delete_video(current_user, video_id):
     try:
@@ -938,6 +964,7 @@ def delete_video(current_user, video_id):
 
 
 @api.route('/videos/<int:video_id>', methods=['PUT'])
+@db_required
 @login_required
 def rename_video(current_user, video_id):
     """Переименование видео"""
@@ -965,6 +992,7 @@ def rename_video(current_user, video_id):
 # --- ADMIN PANEL ---
 
 @api.route('/admin/stats', methods=['GET'])
+@db_required
 @login_required
 @admin_required
 def get_admin_stats(current_user):
@@ -1029,6 +1057,7 @@ def get_admin_stats(current_user):
 
 
 @api.route('/admin/users', methods=['GET'])
+@db_required
 @login_required
 @admin_required
 def get_all_users(current_user):
@@ -1063,6 +1092,7 @@ def get_all_users(current_user):
 
 
 @api.route('/admin/users/<int:user_id>/details', methods=['GET'])
+@db_required
 @login_required
 @admin_required
 def get_user_admin_details(current_user, user_id):
@@ -1111,6 +1141,7 @@ def get_user_admin_details(current_user, user_id):
 
 
 @api.route('/admin/users/<int:user_id>/status', methods=['POST'])
+@db_required
 @login_required
 @admin_required
 def update_user_status(current_user, user_id):
@@ -1135,7 +1166,7 @@ def update_user_status(current_user, user_id):
 
         user.save()
 
-        # [NEW] Инвалидация кэша
+        # Инвалидация кэша
         # Удаляем общий список, так как статус юзера изменился
         delete_cache("admin_users_list")
         # Удаляем детальную инфу конкретного юзера
@@ -1149,6 +1180,7 @@ def update_user_status(current_user, user_id):
 
 
 @api.route('/admin/users/<int:user_id>', methods=['DELETE'])
+@db_required
 @login_required
 @admin_required
 def delete_user_force(current_user, user_id):
