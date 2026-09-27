@@ -9,7 +9,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      # Конфиг теперь монтируем напрямую в conf.d
+      # Конфиг
       - ./startup_scripts/nginx.conf:/etc/nginx/conf.d/default.conf
       # Тома для SSL
       - ./certbot/conf:/etc/letsencrypt
@@ -19,15 +19,13 @@ services:
     depends_on:
       - web
       - voice_service
-    # Команда запуска: запускает Nginx и фоном каждые 6 часов просит его перезагрузить конфиги (чтобы подхватить новые серты)
+    # Команда запуска: запускает Nginx и фоном просит его перезагрузить конфиги
     command: '/bin/sh -c ''chmod -R 755 /app/static && while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g "daemon off;"'''
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 128M
-
-  # Сервис certbot удален полностью
 
   # --- 2. Database (Postgres) ---
   postgres:
@@ -69,7 +67,7 @@ services:
           cpus: '1'
           memory: 512M
 
-  # --- 3. Redis ---
+  # --- Redis ---
   redis:
     image: redis:7-alpine
     container_name: redis
@@ -83,7 +81,7 @@ services:
           cpus: '0.5'
           memory: 256M
 
-  # --- 4. MinIO ---
+  # --- MinIO ---
   minio:
     image: minio/minio:RELEASE.2023-01-25T00-19-54Z
     container_name: minio
@@ -95,9 +93,8 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      # Важно: 9000 прокидываем наружу, так как S3_ENDPOINT в .env будет указывать на внешний IP
       - "9000:9000"
-      # Консоль админа MinIO (по желанию, можно убрать если не нужна снаружи)
+      # Консоль админа MinIO
       - "9001:9001"
     deploy:
       resources:
@@ -105,7 +102,7 @@ services:
           cpus: '1'
           memory: 512M
 
-  # --- 5. MinIO Setup ---
+  # --- MinIO Setup ---
   createbuckets:
     image: minio/mc:RELEASE.2023-08-29T22-55-06Z
     depends_on:
@@ -115,7 +112,7 @@ services:
       - ./startup_scripts:/startup_scripts
     entrypoint: /bin/sh /startup_scripts/minio_startup.sh
 
-  # Отдельный контейнер для Бота
+  # Бот
   bot:
     build: .
     container_name: tg_bot
@@ -131,7 +128,7 @@ services:
           cpus: '0.5'
           memory: 256M
 
-  # --- 6. Main Web Application ---
+  # --- Main Web Application ---
   web:
     build: .
     container_name: web_app
@@ -143,8 +140,6 @@ services:
       - postgres
       - redis
       - minio
-    # Добавляем extra_hosts, чтобы контейнер мог обратиться к хосту по внешнему IP (для MinIO)
-    # Это "хак" для связи с S3_ENDPOINT=IP:9000
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:8000 main:app
@@ -156,7 +151,7 @@ services:
           cpus: '1'
           memory: 800M
 
-# --- 7.1 Celery Fast Worker (Для легких файлов) ---
+# --- Celery Fast Worker (Для легких файлов) ---
   celery_fast:
     build: .
     container_name: celery_fast
@@ -177,7 +172,7 @@ services:
           cpus: '0.8'
           memory: 512M
 
-  # --- 7.2 Celery Heavy Worker (Для тяжелых файлов) ---
+  # --- Celery Heavy Worker (Для тяжелых файлов) ---
   celery_heavy:
     build: .
     container_name: celery_heavy
@@ -198,7 +193,7 @@ services:
           cpus: '1'
           memory: 1024M
 
-  # --- 8. Celery Beat (Планировщик - без изменений) ---
+  # --- Celery Beat (планировщик) ---
   celery_beat:
     build: .
     container_name: celery_beat
@@ -225,21 +220,21 @@ services:
       - postgres
       - redis
     ports:
-      - "8001:8001" # Для отладки, в проде закроем Nginx-ом
+      - "8001:8001"
     deploy:
       resources:
         limits:
           cpus: '0.1'
           memory: 64M
 
-  # --- Certbot (New) ---
+  # --- Certbot ---
   certbot:
     image: certbot/certbot
     container_name: certbot
     volumes:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
-    # Проверка обновлений каждые 12 часов
+    # Проверка обновлений
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
 volumes:

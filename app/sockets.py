@@ -237,7 +237,7 @@ def on_connect(*args, **kwargs):
 
 @socketio.on('disconnect')
 @db_session
-def on_disconnect():
+def on_disconnect(*args, **kwargs):
     sid = request.sid
 
     # Спасаем статистику и чистим кэш

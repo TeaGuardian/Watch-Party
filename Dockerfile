@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Сначала копируем requirements для кеширования слоев
 COPY requirements.txt .
 # Устанавливаем зависимости + gunicorn и eventlet для продакшена
 RUN pip install --no-cache-dir -r requirements.txt \
@@ -22,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # Копируем код приложения
 COPY . .
 
-# Создаем папку для локальных файлов (на всякий случай)
+# Создаем папку для локальных файлов
 RUN mkdir -p storage/uploads storage/saved_files
 
 # Переменная для python, чтобы вывод не буферизировался

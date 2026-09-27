@@ -1,4 +1,43 @@
-/venv
-/*/__pycache__
-/storage
-/ffmpeg.exe
+# venv
+/venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# keys
+.env
+.env.*
+*.env
+
+# dev
+/dev-notes/
+/storage/
+
+# dev
+init-ssl.sh
+launch.bat
+rezult.txt
+test.py
+ffmpeg.exe
+
+# PyCharm / IDE
+.idea/
+*.iml
+.vscode/
+
+# temp
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
