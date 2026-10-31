@@ -1428,48 +1428,198 @@ window.changeVideo = function(id) {
         showPlayerToast("Только владелец может менять видео");
     }
 }
+// ====================== Конфиг ======================
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB (можно 2–8 MB)
+const MAX_RETRIES_PER_CHUNK = 3;
+
+// ====================== Вспомогательные функции ======================
+
+async function calculateFileHash(file) {
+    // Считаем SHA-256 всего файла
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function abortUpload(uploadId) {
+    if (!uploadId) return;
+
+    try {
+        await fetch(`/api/rooms/${ROOM_UUID}/upload/abort`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_id: uploadId })
+        });
+    } catch (e) {
+        console.warn('Abort request failed:', e);
+    }
+}
+
+// ====================== Основная функция ======================
 
 window.uploadVideo = async function() {
     const input = document.getElementById('file-upload');
     const btn = document.getElementById('video-upload-bt');
     if (!input.files.length) return;
+
     const file = input.files[0];
-    if (file.size > MAX_VIDEO_SIZE) { alert("Файл слишком большой"); return; }
+
+    if (file.size > MAX_VIDEO_SIZE) {
+        alert("Файл слишком большой");
+        return;
+    }
 
     btn.disabled = true;
-    const formData = new FormData();
-    formData.append('video', file);
-    document.getElementById('upload-progress').style.display = 'block';
+    const progressBar = document.getElementById('progress-fill');
+    const progressText = document.getElementById('upload-percent');
+    const progressContainer = document.getElementById('upload-progress');
 
-    const bar = document.getElementById('progress-fill');
-    const text = document.getElementById('upload-percent');
-    if(bar) bar.style.width = '0%';
+    progressContainer.style.display = 'block';
+    if (progressBar) progressBar.style.width = '0%';
+    if (progressText) progressText.textContent = 'Подготовка...';
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/rooms/${ROOM_UUID}/upload`);
-    xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-            const percent = (e.loaded / e.total) * 100;
-            if(bar) bar.style.width = percent + '%';
-            if(text) text.textContent = Math.round(percent) + '%';
+    let uploadId = null;
+    let videoId = null;
+    let aborted = false;
+
+    try {
+        // 1. Считаем хэш
+        if (progressText) progressText.textContent = 'Считаем хэш...';
+        const fileHash = await calculateFileHash(file);
+        console.log('File hash:', fileHash);
+
+        // 2. Init
+        if (progressText) progressText.textContent = 'Инициализация...';
+
+        const initRes = await fetch(`/api/rooms/${ROOM_UUID}/upload/init`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                file_hash: fileHash,
+                total_size: file.size
+            })
+        });
+
+        const initData = await initRes.json();
+
+        if (!initRes.ok) {
+            throw new Error(initData.error || 'Init failed');
         }
-    };
-    xhr.onload = () => {
+
+        uploadId = initData.upload_id;
+        videoId = initData.video_id;
+        console.log('Upload started:', uploadId, 'video_id:', videoId);
+
+        // 3. Загружаем чанки последовательно
+        let offset = 0;
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        while (offset < file.size) {
+            if (aborted) break;
+
+            const chunk = file.slice(offset, offset + CHUNK_SIZE);
+            const chunkIndex = Math.floor(offset / CHUNK_SIZE);
+
+            let success = false;
+            let lastError = null;
+
+            for (let attempt = 1; attempt <= MAX_RETRIES_PER_CHUNK; attempt++) {
+                try {
+                    const formData = new FormData();
+                    formData.append('chunk', chunk);
+                    formData.append('upload_id', uploadId);
+                    formData.append('offset', offset);
+
+                    const chunkRes = await fetch(`/api/rooms/${ROOM_UUID}/upload/chunk`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const chunkData = await chunkRes.json();
+
+                    if (!chunkRes.ok) {
+                        // Сервер сказал "out of order" или size exceeded → фатально
+                        if (chunkRes.status === 400 &&
+                            (chunkData.error?.includes('sequential') ||
+                             chunkData.error?.includes('exceeds'))) {
+                            throw new Error(chunkData.error);
+                        }
+                        throw new Error(chunkData.error || `Chunk failed (${chunkRes.status})`);
+                    }
+
+                    // Успех
+                    offset = chunkData.received; // берём актуальное значение с сервера
+                    success = true;
+
+                    // Прогресс
+                    const percent = Math.round((offset / file.size) * 100);
+                    if (progressBar) progressBar.style.width = percent + '%';
+                    if (progressText) progressText.textContent = `${percent}%`;
+
+                    break; // выходим из retry-цикла
+
+                } catch (err) {
+                    lastError = err;
+                    console.warn(`Chunk ${chunkIndex} attempt ${attempt} failed:`, err.message);
+
+                    if (attempt < MAX_RETRIES_PER_CHUNK) {
+                        await sleep(800 * attempt); // небольшой backoff
+                    }
+                }
+            }
+
+            if (!success) {
+                throw lastError || new Error('Chunk upload failed after retries');
+            }
+        }
+
+        if (aborted) {
+            throw new Error('Upload aborted');
+        }
+
+        // 4. Complete
+        if (progressText) progressText.textContent = 'Финализация...';
+
+        const completeRes = await fetch(`/api/rooms/${ROOM_UUID}/upload/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ upload_id: uploadId })
+        });
+
+        const completeData = await completeRes.json();
+
+        if (!completeRes.ok) {
+            throw new Error(completeData.error || 'Complete failed');
+        }
+
+        console.log('Upload completed successfully', completeData);
+
+        // Успех
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressText) progressText.textContent = 'Готово';
+
+        // Небольшая пауза, чтобы пользователь увидел 100%
+        await sleep(400);
+        loadRoomData();
+
+    } catch (err) {
+        console.error('Upload error:', err);
+        alert('Ошибка загрузки: ' + (err.message || 'неизвестная ошибка'));
+
+        if (uploadId) await abortUpload(uploadId);
+
+    } finally {
         btn.disabled = false;
-        document.getElementById('upload-progress').style.display = 'none';
+        progressContainer.style.display = 'none';
         input.value = '';
-        if(xhr.status === 200) {
-            loadRoomData();
-        } else {
-            alert('Ошибка загрузки');
-        }
-    };
-    xhr.onerror = () => {
-        btn.disabled = false;
-        alert('Ошибка сети');
-    };
-    xhr.send(formData);
-}
+    }
+};
 
 window.deleteVideo = async function(e, id) {
     e.stopPropagation();

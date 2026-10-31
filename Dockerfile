@@ -16,7 +16,7 @@ WORKDIR /app
 COPY requirements.txt .
 # Устанавливаем зависимости + gunicorn и eventlet для продакшена
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir gunicorn eventlet
+    && pip install --no-cache-dir "gunicorn[eventlet]==22.0.0" "eventlet==0.36.1"
 
 # Копируем код приложения
 COPY . .

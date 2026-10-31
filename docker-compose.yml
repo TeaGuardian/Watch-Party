@@ -18,7 +18,7 @@ services:
       - ./static:/app/static
     depends_on:
       - web
-      - voice_service
+#      - voice_service
     # Команда запуска: запускает Nginx и фоном просит его перезагрузить конфиги
     command: '/bin/sh -c ''chmod -R 755 /app/static && while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g "daemon off;"'''
     deploy:
@@ -83,7 +83,7 @@ services:
 
   # --- MinIO ---
   minio:
-    image: minio/minio:RELEASE.2023-01-25T00-19-54Z
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     container_name: minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -104,7 +104,7 @@ services:
 
   # --- MinIO Setup ---
   createbuckets:
-    image: minio/mc:RELEASE.2023-08-29T22-55-06Z
+    image: pgsty/mc:RELEASE.2026-10-26T00-00-00Z
     depends_on:
       - minio
     env_file: .env
@@ -209,23 +209,23 @@ services:
           cpus: '0.2'
           memory: 256M
 
-  voice_service:
-    build:
-      context: .
-      dockerfile: Dockerfile.voice
-    container_name: voice_service
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    ports:
-      - "8001:8001"
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 64M
+#  voice_service:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile.voice
+#    container_name: voice_service
+#    restart: unless-stopped
+#    env_file: .env
+#    depends_on:
+#      - postgres
+#      - redis
+#    ports:
+#      - "8001:8001"
+#    deploy:
+#      resources:
+#        limits:
+#          cpus: '0.1'
+#          memory: 64M
 
   # --- Certbot ---
   certbot:

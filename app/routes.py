@@ -45,6 +45,15 @@ def calculate_file_hash(file_stream):
     return sha256_hash.hexdigest()
 
 
+def calculate_file_hash_from_path(file_path: str) -> str:
+    """Хеш файла по пути на диске (для chunked upload)."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(1024 * 1024), b""):  # 1 MB чанки
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
 @api.route('/internal/progress', methods=['POST'])
 @db_required
 def internal_progress_hook():
@@ -912,6 +921,416 @@ def upload_video(current_user, room_uuid):
         return jsonify({'success': True, 'message': 'Added to processing queue', 'video_id': video.id})
 
     return jsonify({'error': 'Invalid file type'}), 400
+
+
+# ====================== Глобальное состояние (в памяти) ======================
+
+# upload_id -> state
+UPLOADS = {}
+
+# Пример структуры state:
+# {
+#     "user_id": int,
+#     "room_uuid": str,
+#     "video_id": int | None,
+#     "filename": str,
+#     "file_hash": str,          # ожидаемый SHA-256
+#     "total_size": int,         # ожидаемый размер
+#     "received": int,           # сколько байт уже записано
+#     "temp_path": str,
+#     "last_activity": float,
+#     "status": "uploading" | "completed" | "aborted"
+# }
+
+CLEANUP_INTERVAL = 300  # сек
+UPLOAD_TTL = 1800  # 30 минут без активности → убиваем
+
+
+# ====================== Вспомогательные функции ======================
+
+def _cleanup_stale_uploads():
+    """Удаляет протухшие аплоады и их временные файлы"""
+    now = time.time()
+    to_delete = []
+    for upload_id, state in UPLOADS.items():
+        if now - state["last_activity"] > UPLOAD_TTL:
+            to_delete.append(upload_id)
+
+    for upload_id in to_delete:
+        state = UPLOADS.pop(upload_id, None)
+        if state and state.get("temp_path") and os.path.exists(state["temp_path"]):
+            try:
+                os.remove(state["temp_path"])
+            except:
+                pass
+        # если уже создали Video со статусом uploading — можно пометить error / удалить
+
+
+def _abort_upload(upload_id: str, reason: str = ""):
+    """Принудительно обрываем аплоад"""
+    state = UPLOADS.pop(upload_id, None)
+    if not state:
+        return
+
+    if state.get("temp_path") and os.path.exists(state["temp_path"]):
+        try:
+            os.remove(state["temp_path"])
+        except:
+            pass
+
+    # Если Video уже создан — переводим в error или удаляем
+    if state.get("video_id"):
+        try:
+            video = Video.get_by_id(state["video_id"])
+            if video.status == "uploading":
+                video.status = "error"
+                video.save()
+                # socketio.emit(...)
+        except:
+            pass
+
+
+# ====================== Роуты ======================
+
+@api.route('/rooms/<uuid:room_uuid>/upload/init', methods=['POST'])
+@db_required
+@login_required
+def upload_init(current_user, room_uuid):
+    """
+    Инициализация chunked-аплоада.
+    Клиент присылает: filename, file_hash, total_size
+    """
+    # --- 1. Проверка статуса пользователя ---
+    if current_user.status != 'approved' and current_user.role != 'admin':
+        if current_user.status == 'tg_verified':
+            return jsonify({
+                'error': 'Дождитесь подтверждения профиля администратором для загрузки файлов'
+            }), 403
+        else:
+            return jsonify({
+                'error': 'Привяжите Telegram и дождитесь одобрения для загрузки'
+            }), 403
+
+    # --- 2. Проверка комнаты и прав ---
+    try:
+        room = Room.get(Room.uuid == room_uuid)
+        if room.owner != current_user and not room.allow_guest_control:
+            return jsonify({'error': 'Only owner can upload'}), 403
+    except Room.DoesNotExist:
+        return jsonify({'error': 'Room not found'}), 404
+
+    # --- 3. Валидация входных данных ---
+    data = request.json or {}
+    filename = (data.get('filename') or '').strip()
+    file_hash = (data.get('file_hash') or '').lower().strip()
+    total_size = data.get('total_size')
+
+    if not filename:
+        return jsonify({'error': 'Filename is required'}), 400
+
+    if not file_hash or len(file_hash) != 64:  # SHA-256 = 64 hex-символа
+        return jsonify({'error': 'Invalid file_hash'}), 400
+
+    if not isinstance(total_size, int) or total_size <= 0:
+        return jsonify({'error': 'Invalid total_size'}), 400
+
+    if not allowed_file(filename):
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    # --- 4. Лимит количества видео в комнате ---
+    video_count = Video.select().where(Video.room == room).count()
+    if video_count >= AppConfig.MAX_ROOM_VIDEOS:
+        return jsonify({
+            'error': f'В комнате максимум {AppConfig.MAX_ROOM_VIDEOS} видео. Удалите старые.',
+            'code': 'limit_reached'
+        }), 400
+
+    # --- 5. Лимит размера одного файла ---
+    if total_size > AppConfig.MAX_VIDEO_SIZE_BYTES:
+        return jsonify({
+            'error': f'Файл слишком большой. Максимум {AppConfig.MAX_VIDEO_SIZE_MB} МБ.',
+            'code': 'file_too_large'
+        }), 400
+
+    # --- 6. Квота хранилища комнаты ---
+    current_storage_size = Video.select(fn.SUM(Video.file_size)).where(Video.room == room).scalar() or 0
+    if (current_storage_size + total_size) > AppConfig.MAX_ROOM_STORAGE_BYTES:
+        return jsonify({
+            'error': f'Превышен лимит хранилища комнаты ({AppConfig.MAX_ROOM_STORAGE_MB} МБ).',
+            'code': 'storage_limit_reached'
+        }), 400
+
+    # --- 7. Проверка дубликата внутри комнаты ---
+    duplicate_in_room = Video.select().where(
+        (Video.room == room) &
+        (Video.file_hash == file_hash) &
+        (Video.status != 'deleting')
+    ).exists()
+
+    if duplicate_in_room:
+        return jsonify({
+            'error': 'Такое видео уже есть в этой комнате.',
+            'code': 'duplicate_video'
+        }), 400
+
+    # --- 8. Глобальный дедуп (уже готовое видео с таким хэшем) ---
+    existing_source = Video.select().where(
+        (Video.file_hash == file_hash) &
+        (Video.status == 'ready')
+    ).first()
+
+    if existing_source:
+        # Мгновенное добавление без загрузки
+        video = Video.create(
+            room=room,
+            title=secure_filename(filename),
+            storage_path=existing_source.storage_path,
+            status='ready',
+            file_hash=file_hash,
+            file_size=total_size,
+            duration=existing_source.duration
+        )
+
+        socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+        return jsonify({
+            'success': True,
+            'deduplicated': True,
+            'message': 'Video added instantly (deduplicated)',
+            'video_id': video.id
+        })
+
+    # --- 9. Создаём запись Video и временный файл ---
+    video = Video.create(
+        room=room,
+        title=secure_filename(filename),
+        storage_path='',
+        status='uploading',
+        file_hash=file_hash,
+        file_size=total_size,
+    )
+
+    upload_id = secrets.token_urlsafe(16)
+    safe_name = secure_filename(filename)
+    temp_path = os.path.join(AppConfig.UPLOAD_FOLDER, f"chunked_{upload_id}_{safe_name}")
+
+    # Создаём пустой файл
+    try:
+        open(temp_path, 'wb').close()
+    except Exception as e:
+        video.delete_instance()
+        return jsonify({'error': f'Failed to create temp file: {e}'}), 500
+
+    UPLOADS[upload_id] = {
+        'user_id': current_user.id,
+        'room_uuid': str(room_uuid),
+        'video_id': video.id,
+        'filename': filename,
+        'file_hash': file_hash,
+        'total_size': total_size,
+        'received': 0,
+        'temp_path': temp_path,
+        'last_activity': time.time(),
+        'status': 'uploading',
+    }
+
+    socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+    return jsonify({
+        'success': True,
+        'deduplicated': False,
+        'upload_id': upload_id,
+        'video_id': video.id
+    })
+
+
+@api.route('/rooms/<uuid:room_uuid>/upload/chunk', methods=['POST'])
+@db_required
+@login_required
+def upload_chunk(current_user, room_uuid):
+    """
+    Приём одного чанка.
+    Ожидаем:
+      - form-data: chunk (файл)
+      - headers или form: upload_id, offset (или chunk_index)
+    """
+    upload_id = request.form.get("upload_id") or request.headers.get("X-Upload-Id")
+    offset = request.form.get("offset") or request.headers.get("X-Offset")
+
+    if not upload_id or offset is None:
+        return jsonify({"error": "Missing upload_id or offset"}), 400
+
+    try:
+        offset = int(offset)
+    except:
+        return jsonify({"error": "Invalid offset"}), 400
+
+    state = UPLOADS.get(upload_id)
+    if not state:
+        return jsonify({"error": "Unknown or expired upload"}), 404
+
+    # Проверки владельца / комнаты
+    if state["user_id"] != current_user.id or state["room_uuid"] != str(room_uuid):
+        return jsonify({"error": "Access denied"}), 403
+
+    if state["status"] != "uploading":
+        return jsonify({"error": "Upload already finished or aborted"}), 400
+
+    # === Ключевая проверка последовательности ===
+    if offset != state["received"]:
+        _abort_upload(upload_id, "out of order")
+        return jsonify({
+            "error": "Chunks must be sequential",
+            "expected_offset": state["received"]
+        }), 400
+
+    chunk = request.files.get("chunk")
+    if not chunk:
+        return jsonify({"error": "No chunk"}), 400
+
+    chunk_data = chunk.read()
+    chunk_len = len(chunk_data)
+
+    if chunk_len == 0:
+        return jsonify({"error": "Empty chunk"}), 400
+
+    # === Контроль размера по ходу ===
+    new_received = state["received"] + chunk_len
+    if new_received > state["total_size"]:
+        _abort_upload(upload_id, "size exceeded")
+        return jsonify({"error": "Received size exceeds declared total_size"}), 400
+
+    # Пишем в файл по offset (на всякий случай, хотя у нас строго sequential)
+    with open(state["temp_path"], "r+b") as f:
+        f.seek(offset)
+        f.write(chunk_data)
+
+    state["received"] = new_received
+    state["last_activity"] = time.time()
+
+    return jsonify({
+        "success": True,
+        "received": state["received"],
+        "total": state["total_size"]
+    })
+
+
+@api.route('/rooms/<uuid:room_uuid>/upload/complete', methods=['POST'])
+@db_required
+@login_required
+def upload_complete(current_user, room_uuid):
+    """
+    Финализация. Клиент говорит, что всё отправил.
+    Здесь делаем финальную проверку размера + хэша.
+    """
+    data = request.json or {}
+    upload_id = data.get("upload_id")
+
+    state = UPLOADS.get(upload_id)
+    if not state:
+        return jsonify({"error": "Unknown or expired upload"}), 404
+
+    if state["user_id"] != current_user.id or state["room_uuid"] != str(room_uuid):
+        return jsonify({"error": "Access denied"}), 403
+
+    if state["status"] != "uploading":
+        return jsonify({"error": "Already completed or aborted"}), 400
+
+    # 1. Проверка размера
+    if state["received"] != state["total_size"]:
+        _abort_upload(upload_id, "incomplete")
+        return jsonify({
+            "error": "Size mismatch",
+            "received": state["received"],
+            "expected": state["total_size"]
+        }), 400
+
+    # 2. Проверка реального размера файла на диске
+    real_size = os.path.getsize(state["temp_path"])
+    if real_size != state["total_size"]:
+        _abort_upload(upload_id, "disk size mismatch")
+        return jsonify({"error": "Disk size mismatch"}), 400
+
+    # 3. Подсчёт хэша готового файла
+    calculated_hash = calculate_file_hash_from_path(state["temp_path"])
+
+    if calculated_hash != state["file_hash"]:
+        _abort_upload(upload_id, "hash mismatch")
+        return jsonify({"error": "Hash mismatch"}), 400
+
+    # Всё ок → переводим в очередь обработки
+    video = Video.get_by_id(state["video_id"])
+    video.status = "queued"
+    video.save()
+
+    # Выбираем очередь (heavy/fast) как сейчас
+    target_queue = CeleryConfig.QUEUE_HEAVY if state["total_size"] > AppConfig.HEAVY_VIDEO_THRESHOLD_BYTES else CeleryConfig.QUEUE_FAST
+
+    process_video_task.apply_async(
+        args=[video.id, state["temp_path"]],
+        queue=target_queue
+    )
+
+    # Убираем из активного словаря (файл теперь принадлежит Celery)
+    state["status"] = "completed"
+    UPLOADS.pop(upload_id, None)
+
+    socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+    return jsonify({
+        "success": True,
+        "video_id": video.id,
+        "message": "Upload completed, queued for processing"
+    })
+
+
+@api.route('/rooms/<uuid:room_uuid>/upload/abort', methods=['POST'])
+@db_required
+@login_required
+def upload_abort(current_user, room_uuid):
+    """
+    Принудительная отмена аплоада.
+    Клиент присылает: { "upload_id": "..." }
+    """
+    data = request.json or {}
+    upload_id = data.get('upload_id')
+
+    if not upload_id:
+        return jsonify({'error': 'upload_id is required'}), 400
+
+    state = UPLOADS.get(upload_id)
+    if not state:
+        # Уже протух или завершён — считаем успехом
+        return jsonify({'success': True, 'message': 'Upload not found or already finished'})
+
+    # Проверяем владельца
+    if state['user_id'] != current_user.id or state['room_uuid'] != str(room_uuid):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if state['status'] != 'uploading':
+        return jsonify({'success': True, 'message': 'Upload already finished'})
+
+    # Чистим
+    _abort_upload(upload_id, reason='client abort')
+
+    socketio.emit('playlist_refresh', {}, to=str(room_uuid))
+
+    return jsonify({
+        'success': True,
+        'message': 'Upload aborted'
+    })
+
+
+# ====================== Фоновая чистка ======================
+
+# Можно вызывать из celery beat или просто фоновым потоком / gevent
+def start_upload_cleanup_loop():
+    while True:
+        try:
+            _cleanup_stale_uploads()
+        except Exception as e:
+            print(f"Upload cleanup error: {e}")
+        time.sleep(CLEANUP_INTERVAL)
 
 
 @api.route('/videos/<int:video_id>', methods=['DELETE'])
