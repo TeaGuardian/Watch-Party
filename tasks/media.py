@@ -1,5 +1,6 @@
 # /tasks/media.py
 import os
+import json
 import shutil
 import subprocess
 import logging
@@ -43,24 +44,69 @@ def send_refresh_to_flask(room_uuid):
         logger.warning(f"Failed to send refresh to Flask: {e}")
 
 
-def get_video_duration(file_path):
-    """Получает длительность видео в секундах через ffprobe"""
+def probe_streams(file_path: str) -> dict:
+    """
+    Возвращает:
+    {
+        'duration': float,
+        'video_codec': str | None,
+        'audio_codec': str | None,
+        'can_copy': bool
+    }
+    """
     try:
         cmd = [
             'ffprobe',
             '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
+            '-show_entries', 'format=duration:stream=codec_type,codec_name,pix_fmt',
+            '-of', 'json',
             file_path
         ]
-        # capture_output=True доступен в Python 3.7+
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        duration = float(result.stdout.strip())
-        logger.info(f"Video duration detected: {duration}s")
-        return duration
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+
+        duration = float(data.get('format', {}).get('duration') or 0)
+
+        video_codec = None
+        audio_codec = None
+        pix_fmt = None
+
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'video' and video_codec is None:
+                video_codec = stream.get('codec_name')
+                pix_fmt = stream.get('pix_fmt')
+            elif stream.get('codec_type') == 'audio' and audio_codec is None:
+                audio_codec = stream.get('codec_name')
+
+        # Условия для безопасного copy в HLS (MPEG-TS):
+        # - видео: h264
+        # - пиксельный формат: yuv420p (самый совместимый)
+        # - аудио: aac или отсутствует
+        can_copy = (
+            video_codec == 'h264'
+            and (pix_fmt is None or pix_fmt == 'yuv420p')
+            and (audio_codec in (None, 'aac'))
+        )
+
+        logger.info(
+            f"Probe: duration={duration:.1f}s, "
+            f"v={video_codec}, a={audio_codec}, pix={pix_fmt}, can_copy={can_copy}"
+        )
+
+        return {
+            'duration': duration,
+            'video_codec': video_codec,
+            'audio_codec': audio_codec,
+            'can_copy': can_copy,
+        }
     except Exception as e:
-        logger.error(f"FFprobe error: {e}")
-        return 0.0
+        logger.error(f"Probe failed: {e}")
+        return {
+            'duration': 0.0,
+            'video_codec': None,
+            'audio_codec': None,
+            'can_copy': False,
+        }
 
 
 @app.task(name='tasks.media.process_video', bind=True)
@@ -95,7 +141,8 @@ def process_video_task(self, video_id: int, local_source_path: str):
 
     try:
         # 1. Получаем длительность
-        total_duration = get_video_duration(local_source_path)
+        probe = probe_streams(local_source_path)
+        total_duration = probe['duration']
         """
         if total_duration > 0:
             video.duration = int(total_duration)
@@ -110,11 +157,25 @@ def process_video_task(self, video_id: int, local_source_path: str):
         command = [
             'ffmpeg', '-y',
             '-i', local_source_path,
-            '-threads', '1', # выставить 0 для адаптивного (нужен мощный сервак)
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '24',
-            '-c:a', 'aac', '-b:a', '128k',
+            '-threads', '1',
+        ]
+
+        if probe['can_copy']:
+            logger.info("→ Using stream copy (no transcoding)")
+            command += [
+                '-c', 'copy',  # копируем и видео, и аудио
+            ]
+        else:
+            logger.info("→ Transcoding required")
+            command += [
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-crf', '24',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '128k',
+            ]
+
+        command += [
             '-hls_time', '6',
             '-hls_playlist_type', 'vod',
             '-hls_segment_filename', os.path.join(transcode_dir, 'segment_%03d.ts'),
@@ -131,7 +192,7 @@ def process_video_task(self, video_id: int, local_source_path: str):
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True  # Декодирует байты в строки автоматически
         )
 
