@@ -26,6 +26,7 @@ app.conf.update(
         'tasks.media.cleanup_old_videos': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.check_stuck_videos': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.daily_s3_garbage_collector': {'queue': CeleryConfig.QUEUE_FAST},
+        'local_temp_garbage_collector': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.delete_storage_folder': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.delete_account_files': {'queue': CeleryConfig.QUEUE_FAST},
         'tasks.media.finalize_video_deletion': {'queue': CeleryConfig.QUEUE_FAST},
@@ -49,6 +50,11 @@ app.conf.beat_schedule = {
     },
     'global-s3-gc-daily': {
         'task': 'tasks.media.daily_s3_garbage_collector',
+        'schedule': crontab(hour=4, minute=0),
+        'options': {'queue': CeleryConfig.QUEUE_FAST}
+    },
+    'global-s3-lgc-daily': {
+        'task': 'tasks.media.local_temp_garbage_collector',
         'schedule': crontab(hour=4, minute=0),
         'options': {'queue': CeleryConfig.QUEUE_FAST}
     },

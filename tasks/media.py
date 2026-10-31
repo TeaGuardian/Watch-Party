@@ -587,3 +587,85 @@ def daily_s3_garbage_collector():
                     deleted_count += 1
 
     logger.info(f"🧹 GC FINISHED. Deleted: {deleted_count}, Skipped (fresh): {skipped_fresh}")
+
+
+@app.task(name='tasks.media.local_temp_garbage_collector')
+def local_temp_garbage_collector():
+    """
+    Периодическая очистка локальных временных файлов, которые могли остаться
+    после крашей, рестартов воркеров или оборванных chunked-загрузок.
+     
+    Чистит:
+    1. AppConfig.UPLOAD_FOLDER  — temp_* и chunked_* файлы
+    2. storage/temp_transcode/  — директории транскодинга
+     
+    TTL:
+    - upload temp: 2 часа (UPLOAD_TTL в routes = 30 мин, плюс запас на обработку)
+    - temp_transcode: MAX_PROCESSING_TIMEOUT_HOURS (как в check_stuck_videos)
+    """
+    logger.info("🧹 STARTING LOCAL TEMP GARBAGE COLLECTOR")
+    now = datetime.now()
+    upload_cutoff = now - timedelta(hours=2)
+    transcode_timeout = getattr(AppConfig, 'MAX_PROCESSING_TIMEOUT_HOURS', 6)
+    transcode_cutoff = now - timedelta(hours=transcode_timeout)
+    deleted_files = 0
+    deleted_dirs = 0
+    errors = 0
+    # ------------------------------------------------------------------
+    # 1. UPLOAD_FOLDER (temp_* и chunked_*)
+    # ------------------------------------------------------------------
+    upload_folder = getattr(AppConfig, 'UPLOAD_FOLDER', None)
+    if upload_folder and os.path.isdir(upload_folder):
+        logger.info(f"Scanning upload folder: {upload_folder}")
+        try:
+            for name in os.listdir(upload_folder):
+                # Только известные паттерны временных файлов
+                if not (name.startswith('temp_') or name.startswith('chunked_')):
+                    continue
+                path = os.path.join(upload_folder, name)
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(path))
+                    if mtime < upload_cutoff:
+                        size_mb = os.path.getsize(path) / (1024 * 1024)
+                        os.remove(path)
+                        deleted_files += 1
+                        logger.info(f"🗑️ Removed stale upload file: {name} ({size_mb:.1f} MB, mtime={mtime})")
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"Error removing {path}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to scan UPLOAD_FOLDER: {e}")
+            errors += 1
+    else:
+        logger.warning("UPLOAD_FOLDER not configured or does not exist, skipping")
+        # ------------------------------------------------------------------
+        # 2. storage/temp_transcode/*
+        # ------------------------------------------------------------------
+        transcode_root = os.path.join(AppConfig.BASE_DIR, "storage", "temp_transcode")
+        if os.path.isdir(transcode_root):
+            logger.info(f"Scanning temp_transcode: {transcode_root}")
+            try:
+                for dirname in os.listdir(transcode_root):
+                    dirpath = os.path.join(transcode_root, dirname)
+                    if not os.path.isdir(dirpath):
+                        continue
+                    try:
+                        mtime = datetime.fromtimestamp(os.path.getmtime(dirpath))
+                        if mtime < transcode_cutoff:
+                            shutil.rmtree(dirpath, ignore_errors=True)
+                            deleted_dirs += 1
+                            logger.info(f"🗑️ Removed stale transcode dir: {dirname} (mtime={mtime})")
+                    except Exception as e:
+                        errors += 1
+                        logger.error(f"Error cleaning temp_transcode/{dirname}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to scan temp_transcode: {e}")
+                errors += 1
+        else:
+            logger.info("temp_transcode directory does not exist yet, skipping")
+        logger.info(
+            f"🧹 LOCAL TEMP GC FINISHED. "
+            f"Files deleted: {deleted_files}, Dirs deleted: {deleted_dirs}, Errors: {errors}"
+        )
