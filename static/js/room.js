@@ -1802,6 +1802,17 @@ window.showUserPopover = function(e, uid, name) {
     setTimeout(() => document.addEventListener('click', closeFn), 0);
 }
 
+function sendKnock() {
+    const btn = document.querySelector('#access-buttons .btn-primary');
+    btn.disabled = true;
+    btn.textContent = "Стучимся...";
+
+    document.getElementById('access-status').textContent = "Владельцу отправлен запрос...";
+    if (!socket) socket = io();
+
+    socket.emit('knock_knock', { room_uuid: ROOM_UUID });
+}
+
 function showKnockToast(data) {
     const container = document.getElementById('knock-toast-container');
     const div = document.createElement('div');
