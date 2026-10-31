@@ -177,7 +177,13 @@
                    onchange="uploadVideo(this)">
 
                 <div id="upload-progress" class="upload-progress" style="display: none;">
-                    <span>Загрузка: <span id="upload-percent">0%</span></span>
+                    <div class="upload-progress-header">
+                        <span class="upload-status-text">
+                            Загрузка: <span id="upload-percent">0%</span>
+                            <span id="upload-eta" class="upload-eta"></span>
+                        </span>
+                        <button type="button" id="btn-cancel-upload" class="btn-cancel-upload" title="Отменить загрузку" onclick="cancelCurrentUpload()">✕</button>
+                    </div>
                     <div class="progress-bar"><div id="progress-fill" style="width: 0%"></div></div>
                 </div>
             </div>

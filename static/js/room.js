@@ -1,5 +1,10 @@
 /* #/static/js/room.js */
 
+// ====================== Конфиг ======================
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB (можно 2–8 MB)
+const MAX_RETRIES_PER_CHUNK = 3;
+let currentUploadState = null; // { aborted: boolean, uploadId: string|null }
+
 /* --- Глобальные переменные --- */
 let socket;
 let hls;
@@ -1428,9 +1433,6 @@ window.changeVideo = function(id) {
         showPlayerToast("Только владелец может менять видео");
     }
 }
-// ====================== Конфиг ======================
-const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB (можно 2–8 MB)
-const MAX_RETRIES_PER_CHUNK = 3;
 
 // ====================== Вспомогательные функции ======================
 
@@ -1460,6 +1462,20 @@ async function abortUpload(uploadId) {
     }
 }
 
+function formatRemainingTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '';
+    if (seconds < 5) return 'почти готово';
+    if (seconds < 60) return `~${Math.ceil(seconds)}с`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.ceil(seconds % 60);
+    if (m < 60) {
+        return s > 0 ? `~${m}м ${s}с` : `~${m}м`;
+    }
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm > 0 ? `~${h}ч ${rm}м` : `~${h}ч`;
+}
+
 // ====================== Основная функция ======================
 
 window.uploadVideo = async function() {
@@ -1474,24 +1490,40 @@ window.uploadVideo = async function() {
         return;
     }
 
+    if (currentUploadState && !currentUploadState.aborted) {
+        showPlayerToast('Уже идёт загрузка');
+        return;
+    }
+
     btn.disabled = true;
     const progressBar = document.getElementById('progress-fill');
     const progressText = document.getElementById('upload-percent');
     const progressContainer = document.getElementById('upload-progress');
+    const etaEl = document.getElementById('upload-eta');
+    const cancelBtn = document.getElementById('btn-cancel-upload');
 
     progressContainer.style.display = 'block';
     if (progressBar) progressBar.style.width = '0%';
     if (progressText) progressText.textContent = 'Подготовка...';
+    if (etaEl) etaEl.textContent = '';
+    if (cancelBtn) cancelBtn.disabled = false;
+
+    // ВАЖНО: инициализация ДО любых обращений к .aborted
+    currentUploadState = { aborted: false, uploadId: null, videoId: null };
 
     let uploadId = null;
     let videoId = null;
-    let aborted = false;
+    let uploadStartTime = null;
 
     try {
-        // 1. Считаем хэш
+        // 1. Хэш
         if (progressText) progressText.textContent = 'Считаем хэш...';
+        if (currentUploadState.aborted) throw new Error('Upload aborted');
+
         const fileHash = await calculateFileHash(file);
         console.log('File hash:', fileHash);
+
+        if (currentUploadState.aborted) throw new Error('Upload aborted');
 
         // 2. Init
         if (progressText) progressText.textContent = 'Инициализация...';
@@ -1512,16 +1544,23 @@ window.uploadVideo = async function() {
             throw new Error(initData.error || 'Init failed');
         }
 
+        if (currentUploadState.aborted) {
+            await abortUpload(initData.upload_id);
+            throw new Error('Upload aborted');
+        }
+
         uploadId = initData.upload_id;
         videoId = initData.video_id;
+        currentUploadState.uploadId = uploadId;
+        currentUploadState.videoId = videoId;
         console.log('Upload started:', uploadId, 'video_id:', videoId);
 
-        // 3. Загружаем чанки последовательно
+        // 3. Чанки
         let offset = 0;
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        uploadStartTime = Date.now();
 
         while (offset < file.size) {
-            if (aborted) break;
+            if (currentUploadState.aborted) break;
 
             const chunk = file.slice(offset, offset + CHUNK_SIZE);
             const chunkIndex = Math.floor(offset / CHUNK_SIZE);
@@ -1530,6 +1569,8 @@ window.uploadVideo = async function() {
             let lastError = null;
 
             for (let attempt = 1; attempt <= MAX_RETRIES_PER_CHUNK; attempt++) {
+                if (currentUploadState.aborted) break;
+
                 try {
                     const formData = new FormData();
                     formData.append('chunk', chunk);
@@ -1544,7 +1585,6 @@ window.uploadVideo = async function() {
                     const chunkData = await chunkRes.json();
 
                     if (!chunkRes.ok) {
-                        // Сервер сказал "out of order" или size exceeded → фатально
                         if (chunkRes.status === 400 &&
                             (chunkData.error?.includes('sequential') ||
                              chunkData.error?.includes('exceeds'))) {
@@ -1553,38 +1593,51 @@ window.uploadVideo = async function() {
                         throw new Error(chunkData.error || `Chunk failed (${chunkRes.status})`);
                     }
 
-                    // Успех
-                    offset = chunkData.received; // берём актуальное значение с сервера
+                    offset = chunkData.received;
                     success = true;
 
-                    // Прогресс
                     const percent = Math.round((offset / file.size) * 100);
                     if (progressBar) progressBar.style.width = percent + '%';
                     if (progressText) progressText.textContent = `${percent}%`;
 
-                    break; // выходим из retry-цикла
+                    if (etaEl && uploadStartTime && offset > 0) {
+                        const elapsedSec = (Date.now() - uploadStartTime) / 1000;
+                        if (elapsedSec > 0.5) {
+                            const bytesPerSec = offset / elapsedSec;
+                            const remainingBytes = file.size - offset;
+                            const remainingSec = remainingBytes / bytesPerSec;
+                            etaEl.textContent = remainingSec > 0
+                                ? `· осталось ${formatRemainingTime(remainingSec)}`
+                                : '';
+                        }
+                    }
+
+                    break;
 
                 } catch (err) {
                     lastError = err;
                     console.warn(`Chunk ${chunkIndex} attempt ${attempt} failed:`, err.message);
-
+                    if (currentUploadState.aborted) break;
                     if (attempt < MAX_RETRIES_PER_CHUNK) {
-                        await sleep(800 * attempt); // небольшой backoff
+                        await sleep(800 * attempt);
                     }
                 }
             }
+
+            if (currentUploadState.aborted) break;
 
             if (!success) {
                 throw lastError || new Error('Chunk upload failed after retries');
             }
         }
 
-        if (aborted) {
+        if (currentUploadState.aborted) {
             throw new Error('Upload aborted');
         }
 
         // 4. Complete
         if (progressText) progressText.textContent = 'Финализация...';
+        if (etaEl) etaEl.textContent = '';
 
         const completeRes = await fetch(`/api/rooms/${ROOM_UUID}/upload/complete`, {
             method: 'POST',
@@ -1600,34 +1653,77 @@ window.uploadVideo = async function() {
 
         console.log('Upload completed successfully', completeData);
 
-        // Успех
         if (progressBar) progressBar.style.width = '100%';
         if (progressText) progressText.textContent = 'Готово';
+        if (etaEl) etaEl.textContent = '';
 
-        // Небольшая пауза, чтобы пользователь увидел 100%
         await sleep(400);
         loadRoomData();
 
     } catch (err) {
-        console.error('Upload error:', err);
-        alert('Ошибка загрузки: ' + (err.message || 'неизвестная ошибка'));
+        const wasAborted = currentUploadState && currentUploadState.aborted;
 
-        if (uploadId) await abortUpload(uploadId);
+        if (wasAborted) {
+            console.log('Upload was cancelled by user');
+            if (uploadId) await abortUpload(uploadId);
+        } else {
+            console.error('Upload error:', err);
+            alert('Ошибка загрузки: ' + (err.message || 'неизвестная ошибка'));
+            if (uploadId) await abortUpload(uploadId);
+        }
 
     } finally {
+        currentUploadState = null;
         btn.disabled = false;
         progressContainer.style.display = 'none';
+        if (etaEl) etaEl.textContent = '';
+        if (cancelBtn) cancelBtn.disabled = false;
         input.value = '';
     }
 };
 
+window.cancelCurrentUpload = function() {
+    if (!currentUploadState || currentUploadState.aborted) return;
+
+    currentUploadState.aborted = true;
+
+    const progressText = document.getElementById('upload-percent');
+    const etaEl = document.getElementById('upload-eta');
+    const cancelBtn = document.getElementById('btn-cancel-upload');
+
+    if (progressText) progressText.textContent = 'Отмена...';
+    if (etaEl) etaEl.textContent = '';
+    if (cancelBtn) cancelBtn.disabled = true;
+
+    if (currentUploadState.uploadId) {
+        abortUpload(currentUploadState.uploadId);
+    }
+
+    showPlayerToast('Загрузка отменена');
+};
+
 window.deleteVideo = async function(e, id) {
     e.stopPropagation();
-    if(confirm('Удалить видео?')) {
-        await fetch(`/api/videos/${id}`, {method:'DELETE'});
+
+    // Если это видео сейчас грузится — крестик = отмена загрузки
+    const isCurrentUpload = currentUploadState
+        && !currentUploadState.aborted
+        && currentUploadState.videoId != null
+        && Number(currentUploadState.videoId) === Number(id);
+
+    if (isCurrentUpload) {
+        cancelCurrentUpload();
+        try {
+            await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+        } catch (_) { /* ignore */ }
         loadRoomData();
+        return;
     }
-}
+
+    if (!confirm('Удалить видео?')) return;
+    await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+    loadRoomData();
+};
 
 window.renameVideo = async function(e, id, old) {
     e.stopPropagation();
